@@ -80,10 +80,19 @@ const ACTIVE_ANIMS: &[ActiveAnimEntry] = &[
 /// 桌面猫可见性标志（左键点击切换）
 pub static CAT_VISIBLE: AtomicBool = AtomicBool::new(true);
 
+/// cc 主猫（及其 mini cat）显示开关
+pub static CC_ENABLED: AtomicBool = AtomicBool::new(true);
+/// cx 主猫（及其 mini cat）显示开关
+pub static CX_ENABLED: AtomicBool = AtomicBool::new(true);
+
 /// 右键菜单指针（main thread only，应用生命周期内有效）
 static MENU_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
 /// NSStatusItem 指针（用于 popUpStatusItemMenu 定位到状态栏正下方）
 static STATUS_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
+/// cc 菜单项指针（用于更新勾选状态）
+static CC_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
+/// cx 菜单项指针（用于更新勾选状态）
+static CX_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
 
 // ── 三态状态机 ──
 
@@ -135,7 +144,8 @@ fn register_tray_handler_class() -> &'static AnyClass {
 
             // NSEventType: 1=leftDown, 2=leftUp, 3=rightDown, 4=rightUp
             if event_type == 3 || event_type == 4 {
-                // 右键：在状态栏图标正下方弹出退出菜单
+                // 右键弹出菜单前更新勾选状态
+                update_menu_check_marks();
                 let menu_ptr = MENU_PTR.load(Ordering::Acquire);
                 let item_ptr = STATUS_ITEM_PTR.load(Ordering::Acquire);
                 if !menu_ptr.is_null() && !item_ptr.is_null() {
@@ -157,6 +167,22 @@ fn register_tray_handler_class() -> &'static AnyClass {
         }
     }
 
+    extern "C" fn toggle_cc(_this: &AnyObject, _cmd: Sel, _sender: &AnyObject) {
+        CC_ENABLED.fetch_xor(true, Ordering::Relaxed);
+    }
+
+    extern "C" fn toggle_cx(_this: &AnyObject, _cmd: Sel, _sender: &AnyObject) {
+        CX_ENABLED.fetch_xor(true, Ordering::Relaxed);
+    }
+
+    extern "C" fn quit_app(_this: &AnyObject, _cmd: Sel, _sender: &AnyObject) {
+        unsafe {
+            let mtm = MainThreadMarker::new_unchecked();
+            let app = NSApplication::sharedApplication(mtm);
+            let _: () = msg_send![&*app, terminate: ptr::null::<AnyObject>()];
+        }
+    }
+
     static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
     CLASS.get_or_init(|| {
         let superclass = AnyClass::get("NSObject").unwrap();
@@ -166,9 +192,38 @@ fn register_tray_handler_class() -> &'static AnyClass {
                 sel!(trayClicked:),
                 tray_clicked as extern "C" fn(_, _, _),
             );
+            builder.add_method(
+                sel!(toggleCC:),
+                toggle_cc as extern "C" fn(_, _, _),
+            );
+            builder.add_method(
+                sel!(toggleCX:),
+                toggle_cx as extern "C" fn(_, _, _),
+            );
+            builder.add_method(
+                sel!(quitApp:),
+                quit_app as extern "C" fn(_, _, _),
+            );
         }
         builder.register()
     })
+}
+
+/// 弹出菜单前更新 cc/cx 菜单项的勾选状态
+fn update_menu_check_marks() {
+    unsafe {
+        let cc_ptr = CC_MENU_ITEM_PTR.load(Ordering::Acquire);
+        if !cc_ptr.is_null() {
+            // NSControlStateValueOn = 1, NSControlStateValueOff = 0
+            let state: isize = if CC_ENABLED.load(Ordering::Relaxed) { 1 } else { 0 };
+            let _: () = msg_send![cc_ptr, setState: state];
+        }
+        let cx_ptr = CX_MENU_ITEM_PTR.load(Ordering::Acquire);
+        if !cx_ptr.is_null() {
+            let state: isize = if CX_ENABLED.load(Ordering::Relaxed) { 1 } else { 0 };
+            let _: () = msg_send![cx_ptr, setState: state];
+        }
+    }
 }
 
 // ── 帧预计算 ──
@@ -291,13 +346,49 @@ pub fn create_status_item(nsimages: &[Vec<Retained<NSImage>>]) -> Retained<NSSta
         // 创建右键菜单（不设置到 status_item 上，手动弹出）
         let menu = NSMenu::initWithTitle(mtm.alloc(), &NSString::from_str(""));
 
-        // 只添加"退出"
+        // 获取 handler 实例用于 cc/cx 菜单项的 target
+        let handler_class = register_tray_handler_class();
+        let menu_handler: *mut AnyObject = msg_send![handler_class, new];
+        let _: *mut AnyObject = msg_send![menu_handler, retain];
+
+        // cc 开关
+        let cc_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+            mtm.alloc(),
+            &NSString::from_str("Claude Code"),
+            Some(sel!(toggleCC:)),
+            &NSString::from_str(""),
+        );
+        let _: () = msg_send![&*cc_item, setTarget: menu_handler];
+        let _: () = msg_send![&*cc_item, setState: 1_isize]; // 初始勾选
+        menu.addItem(&cc_item);
+        CC_MENU_ITEM_PTR.store(&*cc_item as *const _ as *mut AnyObject, Ordering::Release);
+        std::mem::forget(cc_item);
+
+        // cx 开关
+        let cx_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+            mtm.alloc(),
+            &NSString::from_str("Codex"),
+            Some(sel!(toggleCX:)),
+            &NSString::from_str(""),
+        );
+        let _: () = msg_send![&*cx_item, setTarget: menu_handler];
+        let _: () = msg_send![&*cx_item, setState: 1_isize]; // 初始勾选
+        menu.addItem(&cx_item);
+        CX_MENU_ITEM_PTR.store(&*cx_item as *const _ as *mut AnyObject, Ordering::Release);
+        std::mem::forget(cx_item);
+
+        // 分隔线
+        let sep = NSMenuItem::separatorItem(mtm);
+        menu.addItem(&sep);
+
+        // 退出
         let quit_item = NSMenuItem::initWithTitle_action_keyEquivalent(
             mtm.alloc(),
             &NSString::from_str("退出"),
-            Some(sel!(terminate:)),
+            Some(sel!(quitApp:)),
             &NSString::from_str(""),
         );
+        let _: () = msg_send![&*quit_item, setTarget: menu_handler];
         menu.addItem(&quit_item);
 
         // 保存 menu 指针（泄漏 Retained 防止释放）

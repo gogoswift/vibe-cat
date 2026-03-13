@@ -76,7 +76,7 @@ fn event_type_to_state(event_type: &str) -> ClaudeState {
         "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse"
         | "PostToolUseFailure" | "SubagentStart" | "SubagentStop" | "PreCompact"
         | "InstructionsLoaded" | "WorktreeCreate" | "WorktreeRemove" | "ConfigChange"
-        | "conversation_starts" | "api_request" | "tool_decision" | "tool_result" | "sse_event" => {
+        | "api_request" | "tool_decision" | "tool_result" | "sse_event" => {
             ClaudeState::Active
         }
         "Stop" | "PermissionRequest" | "TaskCompleted" | "TeammateIdle" | "Notification" => {
@@ -539,12 +539,15 @@ impl UnifiedCatApp {
 
     /// 轮询 Claude 事件状态（适配自原 CatApp::poll_claude_state）
     /// 返回需要新建的 mini cat agent_id 列表
-    fn poll_claude_state(&mut self) -> Vec<String> {
+    fn poll_claude_state(&mut self, cc_on: bool, cx_on: bool) -> Vec<String> {
         let entries = logger::read_recent_entries(200).unwrap_or_default();
         let mut new_agents = Vec::new();
 
         // 检测 subagent 生命周期事件
         for entry in &entries {
+            // 跳过已关闭来源的事件
+            if entry.source == "cx" && !cx_on { continue; }
+            if entry.source != "cx" && !cc_on { continue; }
             let is_new = match &self.last_event_time {
                 Some(t) => entry.timestamp > *t,
                 None => false,
@@ -588,23 +591,36 @@ impl UnifiedCatApp {
             }
         }
 
-        // 扫描新事件，检测快速 Active->Idle 序列（仅 cc 事件）
+        // 扫描新事件，检测快速 Active->Idle 序列
         let mut had_active_in_new_events = false;
+        let mut had_active_in_new_cx_events = false;
         for entry in &entries {
+            if entry.source == "cx" && !cx_on { continue; }
+            if entry.source != "cx" && !cc_on { continue; }
             let is_new = match &self.last_event_time {
                 Some(t) => entry.timestamp > *t,
                 None => true,
             };
+            if !is_new { continue; }
             let is_subagent = entry.raw.get("agent_type").and_then(|v| v.as_str()).is_some();
-            if is_new && !is_subagent && entry.source != "cx" && event_type_to_state(&entry.event_type) == ClaudeState::Active {
-                had_active_in_new_events = true;
+            if is_subagent { continue; }
+            if event_type_to_state(&entry.event_type) == ClaudeState::Active {
+                if entry.source == "cx" {
+                    had_active_in_new_cx_events = true;
+                } else {
+                    had_active_in_new_events = true;
+                }
             }
         }
 
         // 找最后一条 cc 主代理事件来决定主猫状态（排除 cx 事件）
-        let last_non_subagent = entries.iter().rev().find(|e| {
-            e.source != "cx" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
-        });
+        let last_non_subagent = if cc_on {
+            entries.iter().rev().find(|e| {
+                e.source != "cx" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
+            })
+        } else {
+            None
+        };
         let new_state = if let Some(entry) = last_non_subagent {
             if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
                 let age = chrono::Local::now().signed_duration_since(ts);
@@ -642,9 +658,9 @@ impl UnifiedCatApp {
                     .to_string();
                 let key = (entry.session_id.clone(), agent_id);
                 if entry.source == "cx" {
-                    cx_last.insert(key, &entry.event_type);
+                    if cx_on { cx_last.insert(key, &entry.event_type); }
                 } else {
-                    cc_last.insert(key, &entry.event_type);
+                    if cc_on { cc_last.insert(key, &entry.event_type); }
                 }
             }
             self.main_cat.pending_permission_count = cc_last.values()
@@ -656,9 +672,13 @@ impl UnifiedCatApp {
         }
 
         // ---- cx 主猫状态 ----
-        let last_cx_event = entries.iter().rev().find(|e| {
-            e.source == "cx" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
-        });
+        let last_cx_event = if cx_on {
+            entries.iter().rev().find(|e| {
+                e.source == "cx" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
+            })
+        } else {
+            None
+        };
         let cx_new_state = if let Some(entry) = last_cx_event {
             if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
                 let age = chrono::Local::now().signed_duration_since(ts);
@@ -752,10 +772,21 @@ impl UnifiedCatApp {
                     self.cx_main_cat.transition_anim = Some(ANIM_POUNCE);
                     self.cx_main_cat.pending_state = Some(cx_new_state);
                     self.cx_main_cat.switch_to_animation(ANIM_POUNCE);
+                } else if had_active_in_new_cx_events && cx_new_state != ClaudeState::Active {
+                    self.cx_main_cat.transition_anim = Some(ANIM_POUNCE);
+                    self.cx_main_cat.pending_state = Some(cx_new_state);
+                    self.cx_main_cat.switch_to_animation(ANIM_POUNCE);
                 } else {
                     self.cx_main_cat.switch_to_state_animation(cx_new_state);
                 }
             }
+        } else if had_active_in_new_cx_events
+            && cx_new_state != ClaudeState::Active
+            && self.cx_main_cat.transition_anim.is_none()
+        {
+            self.cx_main_cat.transition_anim = Some(ANIM_POUNCE);
+            self.cx_main_cat.pending_state = Some(cx_new_state);
+            self.cx_main_cat.switch_to_animation(ANIM_POUNCE);
         }
 
         new_agents
@@ -904,11 +935,20 @@ impl eframe::App for UnifiedCatApp {
             return; // 定位阶段不绘制
         }
 
+        // ---- 读取 cc/cx 显示开关 ----
+        #[cfg(target_os = "macos")]
+        let (cc_on, cx_on) = (
+            tray::CC_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
+            tray::CX_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        #[cfg(not(target_os = "macos"))]
+        let (cc_on, cx_on) = (true, true);
+
         // ---- 每秒轮询事件 + 每 500ms 检查 pending approval ----
         if now.duration_since(self.last_poll_time) > Duration::from_millis(500) {
             if now.duration_since(self.last_poll_time) > Duration::from_secs(1) {
                 // 轮询事件，收集需要新建的 mini cat ids
-                let new_agent_ids = self.poll_claude_state();
+                let new_agent_ids = self.poll_claude_state(cc_on, cx_on);
                 // 在事件循环之后创建 CatEntity，避免借用冲突
                 for aid in new_agent_ids {
                     let start_x = if aid.starts_with("cx:") {
@@ -964,7 +1004,19 @@ impl eframe::App for UnifiedCatApp {
         {
             if now.duration_since(self.tray_last_frame_time) >= Duration::from_millis(250) {
                 self.tray_last_frame_time = now;
-                tray::sync_tray_state(&mut self.tray_anim_state, self.main_cat.claude_state);
+                // 合并 cc/cx 状态：任一活跃则活跃，全部 Offline 才睡觉
+                let combined_state = {
+                    let cc_st = if cc_on { self.main_cat.claude_state } else { ClaudeState::Offline };
+                    let cx_st = if cx_on { self.cx_main_cat.claude_state } else { ClaudeState::Offline };
+                    if cc_st == ClaudeState::Active || cx_st == ClaudeState::Active {
+                        ClaudeState::Active
+                    } else if cc_st == ClaudeState::Idle || cx_st == ClaudeState::Idle {
+                        ClaudeState::Idle
+                    } else {
+                        ClaudeState::Offline
+                    }
+                };
+                tray::sync_tray_state(&mut self.tray_anim_state, combined_state);
                 tray::advance_tray_animation(&mut self.tray_anim_state);
                 if let Some(ref item) = self.tray_status_item {
                     tray::update_tray_icon(item, &self.tray_anim_state, &self.tray_nsimages);
@@ -1032,7 +1084,7 @@ impl eframe::App for UnifiedCatApp {
 
         // ---- 推进 cx 主猫动画帧（拖拽/下落中暂停） ----
         let cx_suspended = self.cx_is_dragging || self.cx_snap_back_start.is_some();
-        if !cx_suspended {
+        if cx_on && !cx_suspended {
             let cat = &mut self.cx_main_cat;
             let frame_dur = cat.animations[cat.state.current_anim].frame_duration;
             let frame_count = cat.animations[cat.state.current_anim].frames.len();
@@ -1134,7 +1186,7 @@ impl eframe::App for UnifiedCatApp {
         }
 
         // ---- 更新 cx 主猫位置（拖拽/下落中暂停） ----
-        if !cx_suspended {
+        if cx_on && !cx_suspended {
             let cat = &mut self.cx_main_cat;
             let move_speed = cat.animations[cat.state.current_anim].move_speed;
             if move_speed > 0.0 {
@@ -1233,30 +1285,34 @@ impl eframe::App for UnifiedCatApp {
         }
 
         // ---- cx 拖拽下落动画 ----
-        if let Some((start_time, start_y)) = self.cx_snap_back_start {
-            let elapsed = now.duration_since(start_time).as_secs_f32();
-            let duration = 0.25;
-            if elapsed >= duration {
-                self.cx_main_cat.x_offset = (self.cx_main_cat.x_offset + self.cx_drag_offset.x)
-                    .clamp(0.0, (self.window_width - self.cx_main_cat.max_width).max(0.0));
-                self.cx_drag_offset = egui::Vec2::ZERO;
-                self.cx_snap_back_start = None;
-                self.cx_main_cat.state.last_frame_time = now;
-            } else {
-                let t = elapsed / duration;
-                let ease = t * t;
-                self.cx_drag_offset.y = start_y * (1.0 - ease);
+        if cx_on {
+            if let Some((start_time, start_y)) = self.cx_snap_back_start {
+                let elapsed = now.duration_since(start_time).as_secs_f32();
+                let duration = 0.25;
+                if elapsed >= duration {
+                    self.cx_main_cat.x_offset = (self.cx_main_cat.x_offset + self.cx_drag_offset.x)
+                        .clamp(0.0, (self.window_width - self.cx_main_cat.max_width).max(0.0));
+                    self.cx_drag_offset = egui::Vec2::ZERO;
+                    self.cx_snap_back_start = None;
+                    self.cx_main_cat.state.last_frame_time = now;
+                } else {
+                    let t = elapsed / duration;
+                    let ease = t * t;
+                    self.cx_drag_offset.y = start_y * (1.0 - ease);
+                }
             }
         }
 
         // ---- 动态鼠标穿透（仅当鼠标在猫精灵上时关闭穿透） ----
-        let either_dragging = self.is_dragging || self.cx_is_dragging;
-        let combined_rect = if self.last_cat_rect == egui::Rect::NOTHING {
-            self.cx_last_cat_rect
-        } else if self.cx_last_cat_rect == egui::Rect::NOTHING {
-            self.last_cat_rect
+        let either_dragging = (cc_on && self.is_dragging) || (cx_on && self.cx_is_dragging);
+        let cc_rect = if cc_on { self.last_cat_rect } else { egui::Rect::NOTHING };
+        let cx_rect = if cx_on { self.cx_last_cat_rect } else { egui::Rect::NOTHING };
+        let combined_rect = if cc_rect == egui::Rect::NOTHING {
+            cx_rect
+        } else if cx_rect == egui::Rect::NOTHING {
+            cc_rect
         } else {
-            self.last_cat_rect.union(self.cx_last_cat_rect)
+            cc_rect.union(cx_rect)
         };
         update_mouse_passthrough(combined_rect, either_dragging);
 
@@ -1270,7 +1326,9 @@ impl eframe::App for UnifiedCatApp {
                 let available = ui.available_rect_before_wrap();
 
                 // 先画迷你猫（在下层）
-                for mc in &self.mini_cats {
+                for mc in self.mini_cats.iter().filter(|mc| {
+                    if mc.id.starts_with("cx:") { cx_on } else { cc_on }
+                }) {
                     let f = &mc.animations[mc.state.current_anim].frames[mc.state.current_frame];
                     let x = available.min.x + mc.x_offset + (mc.max_width - f.width) / 2.0;
                     let y = available.max.y - f.height - f.bottom_offset;
@@ -1291,7 +1349,7 @@ impl eframe::App for UnifiedCatApp {
                 }
 
                 // 再画大猫（在上层）+ 拖拽交互
-                {
+                if cc_on {
                     let cat = &self.main_cat;
                     let f = &cat.animations[cat.state.current_anim].frames[cat.state.current_frame];
                     let base_x = available.min.x + cat.x_offset + (cat.max_width - f.width) / 2.0;
@@ -1449,7 +1507,8 @@ impl eframe::App for UnifiedCatApp {
                     }
                 }
 
-                // 画 cx 主猫 + 拖拽交互
+                // 画 cx 主猫 + 拖拽交互 (cx_on 时才画)
+                if cx_on
                 {
                     let cat = &self.cx_main_cat;
                     let f = &cat.animations[cat.state.current_anim].frames[cat.state.current_frame];
@@ -1620,6 +1679,17 @@ impl eframe::App for UnifiedCatApp {
 ///       无权限时 fallback 到 defaults + lsappinfo 估算
 #[cfg(target_os = "macos")]
 fn get_dock_bounds(screen_w: f32, _dock_y: f32) -> (f32, f32) {
+    // Dock 不在底部时，窗口铺满屏幕宽度
+    if let Ok(output) = std::process::Command::new("defaults")
+        .args(&["read", "com.apple.dock", "orientation"])
+        .output()
+    {
+        let orientation = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if orientation == "left" || orientation == "right" {
+            return (0.0, screen_w);
+        }
+    }
+
     // 优先尝试 Accessibility API
     if let Some((left, right)) = get_dock_bounds_ax(screen_w) {
         return (left, right);
