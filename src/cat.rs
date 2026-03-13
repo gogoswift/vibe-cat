@@ -396,6 +396,7 @@ struct UnifiedCatApp {
     sprite_sheet: image::RgbaImage,
     cx_sprite_sheet: image::RgbaImage,
     main_cat: CatEntity,
+    cx_main_cat: CatEntity,
     mini_cats: Vec<CatEntity>,
     position_phase: u32,
     window_width: f32,
@@ -448,6 +449,7 @@ impl UnifiedCatApp {
             .to_rgba8();
 
         let main_cat = CatEntity::new_main(ctx, &sheet);
+        let cx_main_cat = CatEntity::new_main(ctx, &cx_sheet);
 
         let window_width = dock_right - dock_left;
         let window_height = main_cat.max_height + 22.0;
@@ -468,6 +470,7 @@ impl UnifiedCatApp {
             sprite_sheet: sheet,
             cx_sprite_sheet: cx_sheet,
             main_cat,
+            cx_main_cat,
             mini_cats: Vec::new(),
             position_phase: 0,
             window_width,
@@ -616,59 +619,97 @@ impl UnifiedCatApp {
             ClaudeState::Offline
         };
 
-        // ---- 计算 pending PermissionRequest 数量 ----
-        // 按 (session_id, agent_id) 分组，取每组最后一条事件
-        // 如果最后一条是 PermissionRequest，说明还未处理
+        // ---- 计算 pending PermissionRequest 数量（按 source 分别统计） ----
         {
-            let mut last_event_per_pair: HashMap<(String, String), &str> = HashMap::new();
+            let mut cc_last: HashMap<(String, String), &str> = HashMap::new();
+            let mut cx_last: HashMap<(String, String), &str> = HashMap::new();
             for entry in &entries {
                 let agent_id = entry.raw.get("agent_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
                 let key = (entry.session_id.clone(), agent_id);
-                last_event_per_pair.insert(key, &entry.event_type);
+                if entry.source == "cx" {
+                    cx_last.insert(key, &entry.event_type);
+                } else {
+                    cc_last.insert(key, &entry.event_type);
+                }
             }
-            self.main_cat.pending_permission_count = last_event_per_pair.values()
+            self.main_cat.pending_permission_count = cc_last.values()
+                .filter(|&&et| et == "PermissionRequest")
+                .count();
+            self.cx_main_cat.pending_permission_count = cx_last.values()
                 .filter(|&&et| et == "PermissionRequest")
                 .count();
         }
 
+        // ---- cx 主猫状态 ----
+        let last_cx_event = entries.iter().rev().find(|e| {
+            e.source == "cx" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
+        });
+        let cx_new_state = if let Some(entry) = last_cx_event {
+            if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
+                let age = chrono::Local::now().signed_duration_since(ts);
+                if age > chrono::Duration::minutes(5) {
+                    ClaudeState::Offline
+                } else {
+                    // 检测 cx elicitation 通知
+                    if entry.event_type == "Notification" {
+                        if let Some(raw) = entry.raw.get("notification_type") {
+                            if raw.as_str() == Some("elicitation_dialog") {
+                                self.cx_main_cat.notification_text =
+                                    Some("等你回答".to_string());
+                                self.cx_main_cat.notification_expire =
+                                    Instant::now() + Duration::from_secs(8);
+                            }
+                        }
+                    }
+                    event_type_to_state(&entry.event_type)
+                }
+            } else {
+                ClaudeState::Offline
+            }
+        } else {
+            ClaudeState::Offline
+        };
+
         // 避免重复处理
         let current_event_time = entries.last().map(|e| e.timestamp.clone());
-        if current_event_time == self.last_event_time && new_state == self.main_cat.claude_state {
+        if current_event_time == self.last_event_time
+            && new_state == self.main_cat.claude_state
+            && cx_new_state == self.cx_main_cat.claude_state
+        {
             return new_agents;
         }
         self.last_event_time = current_event_time;
 
-        // 状态变化处理
+        // ---- cc 主猫状态变化处理 ----
         if new_state != self.main_cat.claude_state {
             if self.main_cat.transition_anim.is_some() {
                 self.main_cat.pending_state = Some(new_state);
-                return new_agents;
-            }
-
-            let old = self.main_cat.claude_state;
-            self.main_cat.claude_state = new_state;
-
-            if old == ClaudeState::Offline
-                && (new_state == ClaudeState::Idle || new_state == ClaudeState::Active)
-            {
-                self.main_cat.transition_anim = Some(ANIM_STRETCH);
-                self.main_cat.pending_state = Some(new_state);
-                self.main_cat.switch_to_animation(ANIM_STRETCH);
-            } else if old == ClaudeState::Active
-                && (new_state == ClaudeState::Idle || new_state == ClaudeState::Offline)
-            {
-                self.main_cat.transition_anim = Some(ANIM_POUNCE);
-                self.main_cat.pending_state = Some(new_state);
-                self.main_cat.switch_to_animation(ANIM_POUNCE);
-            } else if had_active_in_new_events && new_state != ClaudeState::Active {
-                self.main_cat.transition_anim = Some(ANIM_POUNCE);
-                self.main_cat.pending_state = Some(new_state);
-                self.main_cat.switch_to_animation(ANIM_POUNCE);
             } else {
-                self.main_cat.switch_to_state_animation(new_state);
+                let old = self.main_cat.claude_state;
+                self.main_cat.claude_state = new_state;
+
+                if old == ClaudeState::Offline
+                    && (new_state == ClaudeState::Idle || new_state == ClaudeState::Active)
+                {
+                    self.main_cat.transition_anim = Some(ANIM_STRETCH);
+                    self.main_cat.pending_state = Some(new_state);
+                    self.main_cat.switch_to_animation(ANIM_STRETCH);
+                } else if old == ClaudeState::Active
+                    && (new_state == ClaudeState::Idle || new_state == ClaudeState::Offline)
+                {
+                    self.main_cat.transition_anim = Some(ANIM_POUNCE);
+                    self.main_cat.pending_state = Some(new_state);
+                    self.main_cat.switch_to_animation(ANIM_POUNCE);
+                } else if had_active_in_new_events && new_state != ClaudeState::Active {
+                    self.main_cat.transition_anim = Some(ANIM_POUNCE);
+                    self.main_cat.pending_state = Some(new_state);
+                    self.main_cat.switch_to_animation(ANIM_POUNCE);
+                } else {
+                    self.main_cat.switch_to_state_animation(new_state);
+                }
             }
         } else if had_active_in_new_events
             && new_state != ClaudeState::Active
@@ -677,6 +718,32 @@ impl UnifiedCatApp {
             self.main_cat.transition_anim = Some(ANIM_POUNCE);
             self.main_cat.pending_state = Some(new_state);
             self.main_cat.switch_to_animation(ANIM_POUNCE);
+        }
+
+        // ---- cx 主猫状态变化处理 ----
+        if cx_new_state != self.cx_main_cat.claude_state {
+            if self.cx_main_cat.transition_anim.is_some() {
+                self.cx_main_cat.pending_state = Some(cx_new_state);
+            } else {
+                let old = self.cx_main_cat.claude_state;
+                self.cx_main_cat.claude_state = cx_new_state;
+
+                if old == ClaudeState::Offline
+                    && (cx_new_state == ClaudeState::Idle || cx_new_state == ClaudeState::Active)
+                {
+                    self.cx_main_cat.transition_anim = Some(ANIM_STRETCH);
+                    self.cx_main_cat.pending_state = Some(cx_new_state);
+                    self.cx_main_cat.switch_to_animation(ANIM_STRETCH);
+                } else if old == ClaudeState::Active
+                    && (cx_new_state == ClaudeState::Idle || cx_new_state == ClaudeState::Offline)
+                {
+                    self.cx_main_cat.transition_anim = Some(ANIM_POUNCE);
+                    self.cx_main_cat.pending_state = Some(cx_new_state);
+                    self.cx_main_cat.switch_to_animation(ANIM_POUNCE);
+                } else {
+                    self.cx_main_cat.switch_to_state_animation(cx_new_state);
+                }
+            }
         }
 
         new_agents
@@ -832,7 +899,11 @@ impl eframe::App for UnifiedCatApp {
                 let new_agent_ids = self.poll_claude_state();
                 // 在事件循环之后创建 CatEntity，避免借用冲突
                 for aid in new_agent_ids {
-                    let start_x = self.main_cat.x_offset;
+                    let start_x = if aid.starts_with("cx:") {
+                        self.cx_main_cat.x_offset
+                    } else {
+                        self.main_cat.x_offset
+                    };
                     let sheet = if aid.starts_with("cx:") {
                         &self.cx_sprite_sheet
                     } else {
@@ -947,6 +1018,53 @@ impl eframe::App for UnifiedCatApp {
             }
         }
 
+        // ---- 推进 cx 主猫动画帧 ----
+        {
+            let cat = &mut self.cx_main_cat;
+            let frame_dur = cat.animations[cat.state.current_anim].frame_duration;
+            let frame_count = cat.animations[cat.state.current_anim].frames.len();
+            if now.duration_since(cat.state.last_frame_time) >= frame_dur {
+                cat.state.current_frame += 1;
+                if cat.state.current_frame >= frame_count {
+                    cat.state.current_frame = 0;
+                    cat.state.loop_count += 1;
+                    if cat.state.loop_count >= cat.state.max_loops {
+                        if cat.transition_anim.is_some() {
+                            cat.transition_anim = None;
+                            let target = cat.pending_state.take().unwrap_or(cat.claude_state);
+                            if target != cat.claude_state {
+                                let old = cat.claude_state;
+                                cat.claude_state = target;
+                                if old == ClaudeState::Active
+                                    && (target == ClaudeState::Idle || target == ClaudeState::Offline)
+                                {
+                                    cat.transition_anim = Some(ANIM_POUNCE);
+                                    cat.pending_state = Some(target);
+                                    cat.switch_to_animation(ANIM_POUNCE);
+                                } else if old == ClaudeState::Offline
+                                    && (target == ClaudeState::Idle || target == ClaudeState::Active)
+                                {
+                                    cat.transition_anim = Some(ANIM_STRETCH);
+                                    cat.pending_state = Some(target);
+                                    cat.switch_to_animation(ANIM_STRETCH);
+                                } else {
+                                    cat.switch_to_state_animation(target);
+                                }
+                            } else {
+                                cat.switch_to_state_animation(target);
+                            }
+                        } else {
+                            cat.switch_to_state_animation(cat.claude_state);
+                        }
+                    }
+                }
+                cat.state.last_frame_time += frame_dur;
+                if now.duration_since(cat.state.last_frame_time) >= frame_dur {
+                    cat.state.last_frame_time = now;
+                }
+            }
+        }
+
         // ---- 推进迷你猫动画帧 ----
         for mc in &mut self.mini_cats {
             let anim_dur = mc.animations[mc.state.current_anim].frame_duration;
@@ -1002,6 +1120,29 @@ impl eframe::App for UnifiedCatApp {
             self.main_cat.last_move_time = now;
         }
 
+        // ---- 更新 cx 主猫位置 ----
+        {
+            let cat = &mut self.cx_main_cat;
+            let move_speed = cat.animations[cat.state.current_anim].move_speed;
+            if move_speed > 0.0 {
+                let dt = now.duration_since(cat.last_move_time).as_secs_f32();
+                cat.last_move_time = now;
+                cat.x_offset += cat.move_direction * move_speed * dt;
+
+                let max_x = (self.window_width - cat.max_width).max(0.0);
+                if cat.x_offset < 0.0 {
+                    cat.x_offset = 0.0;
+                    cat.move_direction = 1.0;
+                }
+                if cat.x_offset > max_x {
+                    cat.x_offset = max_x;
+                    cat.move_direction = -1.0;
+                }
+            } else {
+                cat.last_move_time = now;
+            }
+        }
+
         // ---- 迷你猫超时兜底：10 分钟未收到 SubagentStop 则自动返回 ----
         for mc in &mut self.mini_cats {
             if !mc.returning && now.duration_since(mc.spawn_time) > Duration::from_secs(600) {
@@ -1011,7 +1152,8 @@ impl eframe::App for UnifiedCatApp {
 
         // ---- 更新迷你猫位置 ----
         let ww = self.window_width;
-        let main_center_x = self.main_cat.x_offset + self.main_cat.max_width / 2.0;
+        let cc_center_x = self.main_cat.x_offset + self.main_cat.max_width / 2.0;
+        let cx_center_x = self.cx_main_cat.x_offset + self.cx_main_cat.max_width / 2.0;
         for mc in &mut self.mini_cats {
             let move_speed = mc.animations[mc.state.current_anim].move_speed;
             if move_speed > 0.0 {
@@ -1019,9 +1161,10 @@ impl eframe::App for UnifiedCatApp {
                 mc.last_move_time = now;
 
                 if mc.returning {
-                    // returning：朝主猫中心跑，用 run 速度
+                    // returning：朝对应主猫中心跑
+                    let target_center = if mc.id.starts_with("cx:") { cx_center_x } else { cc_center_x };
                     let mc_center = mc.x_offset + mc.max_width / 2.0;
-                    let diff = main_center_x - mc_center;
+                    let diff = target_center - mc_center;
                     mc.move_direction = if diff > 0.0 { 1.0 } else { -1.0 };
                     // 用最快的动画（run = index 1）
                     if mc.state.current_anim != 1 && mc.animations.len() > 1 {
@@ -1049,8 +1192,9 @@ impl eframe::App for UnifiedCatApp {
         // 到达主猫身边的 returning 猫：删除
         self.mini_cats.retain(|mc| {
             if !mc.returning { return true; }
+            let target_center = if mc.id.starts_with("cx:") { cx_center_x } else { cc_center_x };
             let mc_center = mc.x_offset + mc.max_width / 2.0;
-            (mc_center - main_center_x).abs() > 5.0
+            (mc_center - target_center).abs() > 5.0
         });
 
         // ---- 拖拽下落动画（垂直落回底部，x 保持不变） ----
@@ -1265,10 +1409,128 @@ impl eframe::App for UnifiedCatApp {
                     }
                 }
 
+                // 画 cx 主猫（无拖拽交互）
+                {
+                    let cat = &self.cx_main_cat;
+                    let f = &cat.animations[cat.state.current_anim].frames[cat.state.current_frame];
+                    let x = available.min.x + cat.x_offset + (cat.max_width - f.width) / 2.0;
+                    let y = available.max.y - f.height - f.bottom_offset;
+
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(x, y),
+                        egui::vec2(f.width, f.height),
+                    );
+
+                    let move_speed = cat.animations[cat.state.current_anim].move_speed;
+                    let uv = if cat.move_direction < 0.0 && move_speed > 0.0 {
+                        egui::Rect::from_min_max(egui::pos2(1.0, 0.0), egui::pos2(0.0, 1.0))
+                    } else {
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
+                    };
+
+                    ui.painter().image(f.texture.id(), rect, uv, egui::Color32::WHITE);
+
+                    // zzz
+                    if cat.state.current_anim == ANIM_SLEEP {
+                        let t_global = self.app_start.elapsed().as_secs_f32();
+                        let cycle = 2.4_f32;
+                        let stagger = 0.8_f32;
+                        let head_x = rect.center().x + rect.width() * 0.25;
+                        let head_y = rect.min.y + 4.0;
+
+                        for i in 0..3u32 {
+                            let phase = (t_global + i as f32 * stagger) % cycle;
+                            let progress = phase / cycle;
+                            let float_y = head_y - progress * 30.0;
+                            let drift_x = head_x + i as f32 * 4.0 + progress * 8.0;
+                            let alpha = if progress < 0.1 {
+                                progress / 0.1
+                            } else if progress < 0.7 {
+                                1.0
+                            } else {
+                                1.0 - (progress - 0.7) / 0.3
+                            };
+                            let font_size = 14.0 - progress * 4.0;
+                            let a = (alpha * 220.0) as u8;
+                            ui.painter().text(
+                                egui::pos2(drift_x, float_y),
+                                egui::Align2::LEFT_BOTTOM,
+                                "z",
+                                egui::FontId::proportional(font_size),
+                                egui::Color32::from_rgba_unmultiplied(200, 200, 255, a),
+                            );
+                        }
+                    }
+
+                    // cx PermissionRequest 气泡
+                    if cat.pending_permission_count > 0 {
+                        let bubble_w = EXPANDED_W;
+                        let bubble_x = available.min.x + cat.x_offset
+                            + (cat.max_width - bubble_w) / 2.0;
+                        let bubble_y = y - 22.0;
+                        let bubble_rect = egui::Rect::from_min_size(
+                            egui::pos2(bubble_x.max(available.min.x), bubble_y.max(available.min.y)),
+                            egui::vec2(bubble_w, 18.0),
+                        );
+                        ui.painter().rect_filled(
+                            bubble_rect, 4.0,
+                            egui::Color32::from_rgba_unmultiplied(245, 243, 240, 230),
+                        );
+                        ui.painter().rect_stroke(
+                            bubble_rect, 4.0,
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 40)),
+                            epaint::StrokeKind::Outside,
+                        );
+                        let label = format!("需要人工介入 ({})", cat.pending_permission_count);
+                        ui.painter().text(
+                            bubble_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            &label,
+                            egui::FontId::proportional(10.0),
+                            egui::Color32::from_rgba_unmultiplied(40, 40, 40, 255),
+                        );
+                    }
+
+                    // cx Notification 气泡
+                    if let Some(ref text) = cat.notification_text {
+                        if now < cat.notification_expire {
+                            let bubble_w = EXPANDED_W;
+                            let bubble_x = available.min.x + cat.x_offset
+                                + (cat.max_width - bubble_w) / 2.0;
+                            let bubble_y = y - 22.0;
+                            let bubble_rect = egui::Rect::from_min_size(
+                                egui::pos2(bubble_x.max(available.min.x), bubble_y.max(available.min.y)),
+                                egui::vec2(bubble_w, 18.0),
+                            );
+                            ui.painter().rect_filled(
+                                bubble_rect, 4.0,
+                                egui::Color32::from_rgba_unmultiplied(245, 243, 240, 230),
+                            );
+                            ui.painter().rect_stroke(
+                                bubble_rect, 4.0,
+                                egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 40)),
+                                epaint::StrokeKind::Outside,
+                            );
+                            ui.painter().text(
+                                bubble_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                text,
+                                egui::FontId::proportional(9.0),
+                                egui::Color32::from_rgba_unmultiplied(40, 40, 40, 255),
+                            );
+                        }
+                    }
+                }
+
                 // 清理已过期通知
                 if let Some(ref _text) = self.main_cat.notification_text {
                     if now >= self.main_cat.notification_expire {
                         self.main_cat.notification_text = None;
+                    }
+                }
+                if let Some(ref _text) = self.cx_main_cat.notification_text {
+                    if now >= self.cx_main_cat.notification_expire {
+                        self.cx_main_cat.notification_text = None;
                     }
                 }
             });
