@@ -50,16 +50,22 @@ fn map_codex_event(
         ),
         "codex.tool_decision" => {
             match tool_name {
-                Some("spawn_agent") => (
-                    "SubagentStart".to_string(),
-                    "SubagentStart".to_string(),
-                    Some("spawn_agent".to_string()),
-                ),
-                Some("close_agent") => (
-                    "SubagentStop".to_string(),
-                    "SubagentStop".to_string(),
-                    Some("close_agent".to_string()),
-                ),
+                Some("spawn_agent") => {
+                    let dec = decision.unwrap_or("unknown");
+                    (
+                        "SubagentStart".to_string(),
+                        format!("Codex subagent spawned ({})", dec),
+                        Some("spawn_agent".to_string()),
+                    )
+                }
+                Some("close_agent") => {
+                    let dec = decision.unwrap_or("unknown");
+                    (
+                        "SubagentStop".to_string(),
+                        format!("Codex subagent stopped ({})", dec),
+                        Some("close_agent".to_string()),
+                    )
+                }
                 Some(tn) => {
                     let dec = decision.unwrap_or("unknown");
                     (
@@ -177,7 +183,7 @@ pub async fn run_server(port: u16) {
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .expect("Cannot bind to address");
+        .unwrap_or_else(|e| panic!("Cannot bind to 127.0.0.1:{}. Is another server already running? Error: {}", port, e));
 
     axum::serve(listener, app)
         .await
