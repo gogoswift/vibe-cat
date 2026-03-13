@@ -223,7 +223,7 @@ fn codex_config_path() -> PathBuf {
     home.join(".codex").join("config.toml")
 }
 
-/// 检查 Codex OTel + notify 是否已配置
+/// 检查 Codex OTel 是否已配置
 fn is_codex_configured() -> bool {
     let config_path = codex_config_path();
 
@@ -241,20 +241,16 @@ fn is_codex_configured() -> bool {
         Err(_) => return false,
     };
 
-    let has_otel = config.get("otel").is_some();
-    let has_notify = config.get("notify").is_some();
-
-    has_otel && has_notify
+    config.get("otel").is_some()
 }
 
-/// 自动检查并配置 Codex OTel + notify
+/// 自动检查并配置 Codex OTel
 /// 返回 Ok(true) 表示执行了配置，Ok(false) 表示已配置无需操作
 fn ensure_codex_config() -> Result<bool, String> {
     if is_codex_configured() {
         return Ok(false);
     }
 
-    let binary_path = get_binary_path();
     let config_path = codex_config_path();
 
     // 确保目录存在
@@ -308,17 +304,6 @@ fn ensure_codex_config() -> Result<bool, String> {
         table.insert("otel".to_string(), toml::Value::Table(otel));
     }
 
-    // 添加 notify（如果不存在）
-    if !table.contains_key("notify") {
-        table.insert(
-            "notify".to_string(),
-            toml::Value::Array(vec![
-                toml::Value::String(binary_path),
-                toml::Value::String("codex".to_string()),
-            ]),
-        );
-    }
-
     // 写入文件
     let output =
         toml::to_string_pretty(&config).map_err(|e| format!("Cannot serialize TOML: {}", e))?;
@@ -347,7 +332,7 @@ pub fn auto_setup() {
 
     match ensure_codex_config() {
         Ok(true) => {
-            eprintln!("{} 已自动配置 Codex OTel + notify", "✓".green());
+            eprintln!("{} 已自动配置 Codex OTel", "✓".green());
         }
         Ok(false) => {}
         Err(e) => {

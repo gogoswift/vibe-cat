@@ -74,11 +74,6 @@ enum Commands {
         port: u16,
     },
 
-    /// 处理 Codex notify 回调（Codex 追加 JSON payload 作为命令行参数）
-    Codex {
-        /// Codex 传入的 JSON payload
-        payload: Option<String>,
-    },
 }
 
 impl Commands {
@@ -128,7 +123,6 @@ fn main() {
             let rt = tokio::runtime::Runtime::new().expect("Cannot create tokio runtime");
             rt.block_on(server::run_server(port));
         }
-        Commands::Codex { payload } => handle_codex_notify(payload),
     }
 }
 
@@ -226,76 +220,6 @@ fn write_raw_event(raw: &serde_json::Value) -> std::io::Result<()> {
     file.unlock()?;
 
     Ok(())
-}
-
-/// 处理 Codex notify 回调
-fn handle_codex_notify(payload: Option<String>) {
-    let json_str = match payload {
-        Some(s) => s,
-        None => {
-            // 也尝试从 stdin 读取
-            let mut input = String::new();
-            if std::io::stdin().read_to_string(&mut input).is_err() || input.trim().is_empty() {
-                eprintln!("{}", "No payload provided".yellow());
-                return;
-            }
-            input
-        }
-    };
-
-    let raw: serde_json::Value = match serde_json::from_str(&json_str) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{}: {}", "Failed to parse Codex JSON".red(), e);
-            return;
-        }
-    };
-
-    // Codex notify payload 字段: type, thread-id, turn-id, cwd, input-messages, last-assistant-message, client
-    let event_type_str = raw
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let thread_id = raw
-        .get("thread-id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    // 映射 Codex notify type 到我们的 event_type
-    let (event_type, summary) = match event_type_str {
-        "agent-turn-complete" => {
-            // 从 last-assistant-message 提取摘要
-            let last_msg = raw
-                .get("last-assistant-message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let short = if last_msg.len() > 80 {
-                format!("{}...", &last_msg[..80])
-            } else {
-                last_msg.to_string()
-            };
-            ("TaskCompleted".to_string(), format!("Turn complete: {}", short))
-        }
-        other => (other.to_string(), format!("Codex: {}", other)),
-    };
-
-    if let Err(e) = logger::write_codex_event(
-        &event_type,
-        thread_id,
-        None,
-        &summary,
-        raw.clone(),
-    ) {
-        eprintln!("{}: {}", "Failed to write Codex event".red(), e);
-        return;
-    }
-
-    eprintln!(
-        "{} {} {}",
-        chrono::Local::now().format("%H:%M:%S").to_string().dimmed(),
-        "[CX-notify]".magenta(),
-        summary
-    );
 }
 
 /// 处理 install 命令
