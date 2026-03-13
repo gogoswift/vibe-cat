@@ -11,9 +11,14 @@ chrono = { version = "0.4", features = ["serde"] }
 colored = "2"
 dirs = "5"
 fs2 = "0.4"
+toml = "0.8"
 eframe = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rand = "0.8"
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
+opentelemetry-proto = { version = "0.27", features = ["gen-tonic-messages"] }
+prost = "0.13"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"

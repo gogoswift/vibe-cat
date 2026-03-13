@@ -4,6 +4,7 @@ mod events;
 mod gui;
 mod installer;
 mod logger;
+mod server;
 mod tail;
 #[cfg(target_os = "macos")]
 mod tray;
@@ -65,6 +66,23 @@ enum Commands {
         #[arg(long)]
         agent_id: String,
     },
+
+    /// 启动 Codex OTel HTTP 接收服务器
+    Server {
+        /// 监听端口（默认 4318）
+        #[arg(long, default_value = "4318")]
+        port: u16,
+    },
+}
+
+impl Commands {
+    /// 是否需要在启动时自动检查并安装 hook 配置
+    fn needs_auto_setup(&self) -> bool {
+        matches!(
+            self,
+            Commands::Gui { .. } | Commands::Tail { .. } | Commands::Status | Commands::Cat | Commands::Server { .. }
+        )
+    }
 }
 
 fn main() {
@@ -72,6 +90,10 @@ fn main() {
     cat::hide_dock_icon();
 
     let cli = Cli::parse();
+
+    if cli.command.needs_auto_setup() {
+        installer::auto_setup();
+    }
 
     match cli.command {
         Commands::Listen => handle_listen(),
@@ -95,6 +117,10 @@ fn main() {
         Commands::Approve => approve::handle_approve(),
         Commands::MiniCat { agent_id: _ } => {
             eprintln!("MiniCat command is deprecated. Mini cats are now managed within the unified cat window.");
+        }
+        Commands::Server { port } => {
+            let rt = tokio::runtime::Runtime::new().expect("Cannot create tokio runtime");
+            rt.block_on(server::run_server(port));
         }
     }
 }
@@ -171,6 +197,7 @@ fn write_raw_event(raw: &serde_json::Value) -> std::io::Result<()> {
 
     let entry = serde_json::json!({
         "timestamp": chrono::Local::now().to_rfc3339(),
+        "source": "cc",
         "event_type": raw.get("hook_event_name").and_then(|v| v.as_str()).unwrap_or("Unknown"),
         "session_id": raw.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown"),
         "summary": format!("Unknown event: {}", raw.get("hook_event_name").and_then(|v| v.as_str()).unwrap_or("?")),

@@ -13,12 +13,18 @@ use crate::events::HookEvent;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LogEntry {
     pub timestamp: String,
+    #[serde(default = "default_source")]
+    pub source: String,
     pub event_type: String,
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
     pub summary: String,
     pub raw: Value,
+}
+
+fn default_source() -> String {
+    "cc".to_string()
 }
 
 /// 获取日志文件路径
@@ -42,6 +48,7 @@ pub fn write_event(event: &HookEvent, raw_json: &Value) -> std::io::Result<()> {
 
     let entry = LogEntry {
         timestamp: Local::now().to_rfc3339(),
+        source: "cc".to_string(),
         event_type: event.event_type().to_string(),
         session_id: event.session_id().to_string(),
         tool_name: event.tool_name().map(|s| s.to_string()),
@@ -89,4 +96,32 @@ pub fn read_recent_entries(count: usize) -> std::io::Result<Vec<LogEntry>> {
     }
 
     Ok(entries)
+}
+
+/// 将 Codex 事件写入日志文件
+pub fn write_codex_event(
+    event_type: &str,
+    session_id: &str,
+    tool_name: Option<&str>,
+    summary: &str,
+    raw: Value,
+) -> std::io::Result<()> {
+    ensure_log_dir()?;
+    let entry = LogEntry {
+        timestamp: Local::now().to_rfc3339(),
+        source: "cx".to_string(),
+        event_type: event_type.to_string(),
+        session_id: session_id.to_string(),
+        tool_name: tool_name.map(|s| s.to_string()),
+        summary: summary.to_string(),
+        raw,
+    };
+    let mut line = serde_json::to_string(&entry)?;
+    line.push('\n');
+    let log_path = log_file_path();
+    let mut file = OpenOptions::new().create(true).append(true).open(&log_path)?;
+    file.lock_exclusive()?;
+    file.write_all(line.as_bytes())?;
+    file.unlock()?;
+    Ok(())
 }
