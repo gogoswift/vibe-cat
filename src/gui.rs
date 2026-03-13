@@ -285,6 +285,12 @@ fn should_show(entry: &LogEntry, filter: Option<&str>) -> bool {
 
 /// 启动 GUI 窗口
 pub fn run_gui(filter: Option<&str>) {
+    // 自动启动 OTel 服务器（接收 Codex 事件）
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Cannot create tokio runtime");
+        rt.block_on(crate::server::run_server(4318));
+    });
+
     let entries: Arc<Mutex<Vec<LogEntry>>> = Arc::new(Mutex::new(Vec::new()));
 
     // 启动后台日志监控线程
