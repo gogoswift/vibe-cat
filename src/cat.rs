@@ -573,7 +573,7 @@ impl UnifiedCatApp {
             }
         }
 
-        // 扫描新事件，检测快速 Active->Idle 序列
+        // 扫描新事件，检测快速 Active->Idle 序列（仅 cc 事件）
         let mut had_active_in_new_events = false;
         for entry in &entries {
             let is_new = match &self.last_event_time {
@@ -581,14 +581,14 @@ impl UnifiedCatApp {
                 None => true,
             };
             let is_subagent = entry.raw.get("agent_type").and_then(|v| v.as_str()).is_some();
-            if is_new && !is_subagent && event_type_to_state(&entry.event_type) == ClaudeState::Active {
+            if is_new && !is_subagent && entry.source != "cx" && event_type_to_state(&entry.event_type) == ClaudeState::Active {
                 had_active_in_new_events = true;
             }
         }
 
-        // 找最后一条主代理事件来决定主猫状态
+        // 找最后一条 cc 主代理事件来决定主猫状态（排除 cx 事件）
         let last_non_subagent = entries.iter().rev().find(|e| {
-            e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
+            e.source != "cx" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
         });
         let new_state = if let Some(entry) = last_non_subagent {
             if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
