@@ -415,14 +415,22 @@ struct UnifiedCatApp {
     dock_refreshing: Arc<Mutex<bool>>,
     /// 应用启动时间 (用于 zzz 等持续动画的时间基准)
     app_start: Instant,
-    /// 拖拽偏移量（拖拽中 / 回弹中生效）
+    /// cc 拖拽偏移量（拖拽中 / 回弹中生效）
     drag_offset: egui::Vec2,
-    /// 是否正在拖拽大猫
+    /// 是否正在拖拽 cc 大猫
     is_dragging: bool,
-    /// 下落动画: (起始时间, 起始 y 偏移)
+    /// cc 下落动画: (起始时间, 起始 y 偏移)
     snap_back_start: Option<(Instant, f32)>,
-    /// 上一帧大猫绘制矩形（用于鼠标命中检测）
+    /// 上一帧 cc 大猫绘制矩形（用于鼠标命中检测）
     last_cat_rect: egui::Rect,
+    /// cx 拖拽偏移量
+    cx_drag_offset: egui::Vec2,
+    /// 是否正在拖拽 cx 大猫
+    cx_is_dragging: bool,
+    /// cx 下落动画
+    cx_snap_back_start: Option<(Instant, f32)>,
+    /// 上一帧 cx 大猫绘制矩形
+    cx_last_cat_rect: egui::Rect,
     /// 托盘动画状态
     #[cfg(target_os = "macos")]
     tray_anim_state: tray::TrayAnimState,
@@ -490,6 +498,10 @@ impl UnifiedCatApp {
             is_dragging: false,
             snap_back_start: None,
             last_cat_rect: egui::Rect::NOTHING,
+            cx_drag_offset: egui::Vec2::ZERO,
+            cx_is_dragging: false,
+            cx_snap_back_start: None,
+            cx_last_cat_rect: egui::Rect::NOTHING,
             #[cfg(target_os = "macos")]
             tray_anim_state: tray::TrayAnimState::new(),
             #[cfg(target_os = "macos")]
@@ -1018,8 +1030,9 @@ impl eframe::App for UnifiedCatApp {
             }
         }
 
-        // ---- 推进 cx 主猫动画帧 ----
-        {
+        // ---- 推进 cx 主猫动画帧（拖拽/下落中暂停） ----
+        let cx_suspended = self.cx_is_dragging || self.cx_snap_back_start.is_some();
+        if !cx_suspended {
             let cat = &mut self.cx_main_cat;
             let frame_dur = cat.animations[cat.state.current_anim].frame_duration;
             let frame_count = cat.animations[cat.state.current_anim].frames.len();
@@ -1120,8 +1133,8 @@ impl eframe::App for UnifiedCatApp {
             self.main_cat.last_move_time = now;
         }
 
-        // ---- 更新 cx 主猫位置 ----
-        {
+        // ---- 更新 cx 主猫位置（拖拽/下落中暂停） ----
+        if !cx_suspended {
             let cat = &mut self.cx_main_cat;
             let move_speed = cat.animations[cat.state.current_anim].move_speed;
             if move_speed > 0.0 {
@@ -1141,6 +1154,8 @@ impl eframe::App for UnifiedCatApp {
             } else {
                 cat.last_move_time = now;
             }
+        } else {
+            self.cx_main_cat.last_move_time = now;
         }
 
         // ---- 迷你猫超时兜底：10 分钟未收到 SubagentStop 则自动返回 ----
@@ -1217,8 +1232,33 @@ impl eframe::App for UnifiedCatApp {
             }
         }
 
+        // ---- cx 拖拽下落动画 ----
+        if let Some((start_time, start_y)) = self.cx_snap_back_start {
+            let elapsed = now.duration_since(start_time).as_secs_f32();
+            let duration = 0.25;
+            if elapsed >= duration {
+                self.cx_main_cat.x_offset = (self.cx_main_cat.x_offset + self.cx_drag_offset.x)
+                    .clamp(0.0, (self.window_width - self.cx_main_cat.max_width).max(0.0));
+                self.cx_drag_offset = egui::Vec2::ZERO;
+                self.cx_snap_back_start = None;
+                self.cx_main_cat.state.last_frame_time = now;
+            } else {
+                let t = elapsed / duration;
+                let ease = t * t;
+                self.cx_drag_offset.y = start_y * (1.0 - ease);
+            }
+        }
+
         // ---- 动态鼠标穿透（仅当鼠标在猫精灵上时关闭穿透） ----
-        update_mouse_passthrough(self.last_cat_rect, self.is_dragging);
+        let either_dragging = self.is_dragging || self.cx_is_dragging;
+        let combined_rect = if self.last_cat_rect == egui::Rect::NOTHING {
+            self.cx_last_cat_rect
+        } else if self.cx_last_cat_rect == egui::Rect::NOTHING {
+            self.last_cat_rect
+        } else {
+            self.last_cat_rect.union(self.cx_last_cat_rect)
+        };
+        update_mouse_passthrough(combined_rect, either_dragging);
 
         // ---- 绘制 ----
         let panel_frame = egui::Frame::NONE
@@ -1409,17 +1449,24 @@ impl eframe::App for UnifiedCatApp {
                     }
                 }
 
-                // 画 cx 主猫（无拖拽交互）
+                // 画 cx 主猫 + 拖拽交互
                 {
                     let cat = &self.cx_main_cat;
                     let f = &cat.animations[cat.state.current_anim].frames[cat.state.current_frame];
-                    let x = available.min.x + cat.x_offset + (cat.max_width - f.width) / 2.0;
-                    let y = available.max.y - f.height - f.bottom_offset;
+                    let base_x = available.min.x + cat.x_offset + (cat.max_width - f.width) / 2.0;
+                    let base_y = available.max.y - f.height - f.bottom_offset;
+
+                    let x = (base_x + self.cx_drag_offset.x)
+                        .clamp(available.min.x, available.max.x - f.width);
+                    let y = (base_y + self.cx_drag_offset.y)
+                        .clamp(available.min.y, available.max.y - f.height);
 
                     let rect = egui::Rect::from_min_size(
                         egui::pos2(x, y),
                         egui::vec2(f.width, f.height),
                     );
+
+                    self.cx_last_cat_rect = rect;
 
                     let move_speed = cat.animations[cat.state.current_anim].move_speed;
                     let uv = if cat.move_direction < 0.0 && move_speed > 0.0 {
@@ -1429,6 +1476,32 @@ impl eframe::App for UnifiedCatApp {
                     };
 
                     ui.painter().image(f.texture.id(), rect, uv, egui::Color32::WHITE);
+
+                    // 拖拽交互
+                    let drag_response = ui.interact(
+                        rect,
+                        egui::Id::new("cx_cat_drag"),
+                        egui::Sense::drag(),
+                    );
+                    if drag_response.dragged() {
+                        self.cx_is_dragging = true;
+                        self.cx_snap_back_start = None;
+                        self.cx_drag_offset += drag_response.drag_delta();
+                        let min_ox = available.min.x - base_x;
+                        let max_ox = available.max.x - f.width - base_x;
+                        let min_oy = available.min.y - base_y;
+                        let max_oy = 0.0_f32;
+                        self.cx_drag_offset.x = self.cx_drag_offset.x.clamp(min_ox, max_ox);
+                        self.cx_drag_offset.y = self.cx_drag_offset.y.clamp(min_oy, max_oy);
+                    }
+                    if drag_response.drag_stopped() {
+                        self.cx_is_dragging = false;
+                        if self.cx_drag_offset.y.abs() > 0.5 {
+                            self.cx_snap_back_start = Some((now, self.cx_drag_offset.y));
+                        } else {
+                            self.cx_drag_offset.y = 0.0;
+                        }
+                    }
 
                     // zzz
                     if cat.state.current_anim == ANIM_SLEEP {
@@ -1466,7 +1539,7 @@ impl eframe::App for UnifiedCatApp {
                     if cat.pending_permission_count > 0 {
                         let bubble_w = EXPANDED_W;
                         let bubble_x = available.min.x + cat.x_offset
-                            + (cat.max_width - bubble_w) / 2.0;
+                            + (cat.max_width - bubble_w) / 2.0 + self.cx_drag_offset.x;
                         let bubble_y = y - 22.0;
                         let bubble_rect = egui::Rect::from_min_size(
                             egui::pos2(bubble_x.max(available.min.x), bubble_y.max(available.min.y)),
@@ -1496,7 +1569,7 @@ impl eframe::App for UnifiedCatApp {
                         if now < cat.notification_expire {
                             let bubble_w = EXPANDED_W;
                             let bubble_x = available.min.x + cat.x_offset
-                                + (cat.max_width - bubble_w) / 2.0;
+                                + (cat.max_width - bubble_w) / 2.0 + self.cx_drag_offset.x;
                             let bubble_y = y - 22.0;
                             let bubble_rect = egui::Rect::from_min_size(
                                 egui::pos2(bubble_x.max(available.min.x), bubble_y.max(available.min.y)),
