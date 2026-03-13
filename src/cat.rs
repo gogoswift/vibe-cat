@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -111,9 +111,6 @@ struct AnimationState {
     max_loops: u32,
 }
 
-/// 待审批标记
-struct PendingApproval;
-
 // ============================================================
 // CatEntity: 统一的猫实体（大猫/迷你猫共用）
 // ============================================================
@@ -133,8 +130,7 @@ struct CatEntity {
     claude_state: ClaudeState,
     transition_anim: Option<usize>,
     pending_state: Option<ClaudeState>,
-    pending_approval: Option<PendingApproval>,
-    bubble_show_time: Option<Instant>,
+    pending_permission_count: usize,
     notification_text: Option<String>,
     notification_expire: Instant,
     max_width: f32,
@@ -191,8 +187,7 @@ impl CatEntity {
             claude_state: ClaudeState::Offline,
             transition_anim: None,
             pending_state: None,
-            pending_approval: None,
-            bubble_show_time: None,
+            pending_permission_count: 0,
             notification_text: None,
             notification_expire: now,
             max_width: max_w,
@@ -258,8 +253,7 @@ impl CatEntity {
             claude_state: ClaudeState::Active,
             transition_anim: None,
             pending_state: None,
-            pending_approval: None,
-            bubble_show_time: None,
+            pending_permission_count: 0,
             notification_text: None,
             notification_expire: now,
             max_width: max_w,
@@ -622,6 +616,24 @@ impl UnifiedCatApp {
             ClaudeState::Offline
         };
 
+        // ---- 计算 pending PermissionRequest 数量 ----
+        // 按 (session_id, agent_id) 分组，取每组最后一条事件
+        // 如果最后一条是 PermissionRequest，说明还未处理
+        {
+            let mut last_event_per_pair: HashMap<(String, String), &str> = HashMap::new();
+            for entry in &entries {
+                let agent_id = entry.raw.get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let key = (entry.session_id.clone(), agent_id);
+                last_event_per_pair.insert(key, &entry.event_type);
+            }
+            self.main_cat.pending_permission_count = last_event_per_pair.values()
+                .filter(|&&et| et == "PermissionRequest")
+                .count();
+        }
+
         // 避免重复处理
         let current_event_time = entries.last().map(|e| e.timestamp.clone());
         if current_event_time == self.last_event_time && new_state == self.main_cat.claude_state {
@@ -694,30 +706,6 @@ impl UnifiedCatApp {
             }
         }
         self.debug_subagents_active = !self.debug_subagents_active;
-    }
-
-    /// 检查 pending approval 文件，气泡显示 5 秒后自动消失
-    fn poll_pending_approval(&mut self) {
-        let pending_path = dirs::home_dir()
-            .unwrap()
-            .join(".claude-hook-monitor")
-            .join("pending-approval.json");
-
-        if pending_path.exists() {
-            if let Some(start) = self.main_cat.bubble_show_time {
-                if start.elapsed() > Duration::from_secs(5) {
-                    let _ = std::fs::remove_file(&pending_path);
-                    self.main_cat.pending_approval = None;
-                    self.main_cat.bubble_show_time = None;
-                }
-            } else {
-                self.main_cat.pending_approval = Some(PendingApproval);
-                self.main_cat.bubble_show_time = Some(Instant::now());
-            }
-        } else {
-            self.main_cat.pending_approval = None;
-            self.main_cat.bubble_show_time = None;
-        }
     }
 
     /// 启动后台线程刷新 Dock 边界（非阻塞）
@@ -855,7 +843,6 @@ impl eframe::App for UnifiedCatApp {
                 }
                 self.last_poll_time = now;
             }
-            self.poll_pending_approval();
         }
 
         // ---- 后台 Dock 刷新（每 5 秒触发，不阻塞 UI） ----
@@ -1218,8 +1205,8 @@ impl eframe::App for UnifiedCatApp {
                         }
                     }
 
-                    // 大猫上方的气泡 -- PermissionRequest
-                    if cat.pending_approval.is_some() {
+                    // 大猫上方的气泡 -- PermissionRequest 计数
+                    if cat.pending_permission_count > 0 {
                         let bubble_w = EXPANDED_W;
                         let bubble_x = available.min.x + cat.x_offset
                             + (cat.max_width - bubble_w) / 2.0 + self.drag_offset.x;
@@ -1237,10 +1224,11 @@ impl eframe::App for UnifiedCatApp {
                             egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 40)),
                             epaint::StrokeKind::Outside,
                         );
+                        let label = format!("需要人工介入 ({})", cat.pending_permission_count);
                         ui.painter().text(
                             bubble_rect.center(),
                             egui::Align2::CENTER_CENTER,
-                            "需要人工介入",
+                            &label,
                             egui::FontId::proportional(10.0),
                             egui::Color32::from_rgba_unmultiplied(40, 40, 40, 255),
                         );
