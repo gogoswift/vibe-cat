@@ -11,6 +11,7 @@ use crate::tray;
 
 /// 嵌入精灵图
 pub(crate) const CAT_SPRITE_BYTES: &[u8] = include_bytes!("assets/cat.png");
+pub(crate) const CAT2_SPRITE_BYTES: &[u8] = include_bytes!("assets/cat2.png");
 
 /// 精灵图网格参数
 const CELL_SIZE: u32 = 32;
@@ -74,7 +75,8 @@ fn event_type_to_state(event_type: &str) -> ClaudeState {
     match event_type {
         "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse"
         | "PostToolUseFailure" | "SubagentStart" | "SubagentStop" | "PreCompact"
-        | "InstructionsLoaded" | "WorktreeCreate" | "WorktreeRemove" | "ConfigChange" => {
+        | "InstructionsLoaded" | "WorktreeCreate" | "WorktreeRemove" | "ConfigChange"
+        | "conversation_starts" | "api_request" | "tool_decision" | "tool_result" | "sse_event" => {
             ClaudeState::Active
         }
         "Stop" | "PermissionRequest" | "TaskCompleted" | "TeammateIdle" | "Notification" => {
@@ -140,6 +142,8 @@ struct CatEntity {
     min_bottom_offset: f32,
     /// mini 猫收到 SubagentStop 后标记为 returning，跑向主猫后消失
     returning: bool,
+    /// mini 猫创建时间，用于超时兜底
+    spawn_time: Instant,
 }
 
 impl CatEntity {
@@ -195,6 +199,7 @@ impl CatEntity {
             max_height: max_h,
             min_bottom_offset,
             returning: false,
+            spawn_time: now,
         }
     }
 
@@ -261,6 +266,7 @@ impl CatEntity {
             max_height: max_h,
             min_bottom_offset,
             returning: false,
+            spawn_time: now,
         }
     }
 
@@ -394,6 +400,7 @@ struct DockBoundsResult {
 
 struct UnifiedCatApp {
     sprite_sheet: image::RgbaImage,
+    cx_sprite_sheet: image::RgbaImage,
     main_cat: CatEntity,
     mini_cats: Vec<CatEntity>,
     position_phase: u32,
@@ -442,6 +449,10 @@ impl UnifiedCatApp {
             .expect("Failed to decode cat sprite sheet")
             .to_rgba8();
 
+        let cx_sheet = image::load_from_memory(CAT2_SPRITE_BYTES)
+            .expect("Failed to decode cat2 sprite sheet")
+            .to_rgba8();
+
         let main_cat = CatEntity::new_main(ctx, &sheet);
 
         let window_width = dock_right - dock_left;
@@ -461,6 +472,7 @@ impl UnifiedCatApp {
         let now = Instant::now();
         UnifiedCatApp {
             sprite_sheet: sheet,
+            cx_sprite_sheet: cx_sheet,
             main_cat,
             mini_cats: Vec::new(),
             position_phase: 0,
@@ -533,18 +545,33 @@ impl UnifiedCatApp {
             }
 
             if entry.event_type == "SubagentStart" {
-                if let Some(aid) = entry.raw.get("agent_id").and_then(|v| v.as_str()) {
-                    if !aid.is_empty() && !self.known_subagents.contains(aid) {
-                        self.known_subagents.insert(aid.to_string());
-                        new_agents.push(aid.to_string());
+                if let Some(aid) = entry.raw.get("agent_id")
+                    .or_else(|| entry.raw.get("call_id"))
+                    .and_then(|v| v.as_str())
+                {
+                    let qualified_id = if entry.source == "cx" {
+                        format!("cx:{}", aid)
+                    } else {
+                        aid.to_string()
+                    };
+                    if !qualified_id.is_empty() && !self.known_subagents.contains(&qualified_id) {
+                        self.known_subagents.insert(qualified_id.clone());
+                        new_agents.push(qualified_id);
                     }
                 }
             } else if entry.event_type == "SubagentStop" {
-                if let Some(aid) = entry.raw.get("agent_id").and_then(|v| v.as_str()) {
-                    self.known_subagents.remove(aid);
-                    // 标记为 returning，让 mini 猫跑向主猫后再消失
+                if let Some(aid) = entry.raw.get("agent_id")
+                    .or_else(|| entry.raw.get("call_id"))
+                    .and_then(|v| v.as_str())
+                {
+                    let qualified_id = if entry.source == "cx" {
+                        format!("cx:{}", aid)
+                    } else {
+                        aid.to_string()
+                    };
+                    self.known_subagents.remove(&qualified_id);
                     for mc in &mut self.mini_cats {
-                        if mc.id == aid {
+                        if mc.id == qualified_id {
                             mc.returning = true;
                         }
                     }
@@ -818,7 +845,12 @@ impl eframe::App for UnifiedCatApp {
                 // 在事件循环之后创建 CatEntity，避免借用冲突
                 for aid in new_agent_ids {
                     let start_x = self.main_cat.x_offset;
-                    let mini = CatEntity::new_mini(ctx, &self.sprite_sheet, &aid, start_x);
+                    let sheet = if aid.starts_with("cx:") {
+                        &self.cx_sprite_sheet
+                    } else {
+                        &self.sprite_sheet
+                    };
+                    let mini = CatEntity::new_mini(ctx, sheet, &aid, start_x);
                     self.mini_cats.push(mini);
                 }
                 self.last_poll_time = now;
@@ -981,6 +1013,13 @@ impl eframe::App for UnifiedCatApp {
         } else {
             // 拖拽/下落中：重置 last_move_time 防止恢复后瞬移
             self.main_cat.last_move_time = now;
+        }
+
+        // ---- 迷你猫超时兜底：10 分钟未收到 SubagentStop 则自动返回 ----
+        for mc in &mut self.mini_cats {
+            if !mc.returning && now.duration_since(mc.spawn_time) > Duration::from_secs(600) {
+                mc.returning = true;
+            }
         }
 
         // ---- 更新迷你猫位置 ----

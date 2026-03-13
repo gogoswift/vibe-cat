@@ -29,6 +29,11 @@ fn event_color(event_type: &str) -> egui::Color32 {
         "WorktreeCreate" => egui::Color32::from_rgb(80, 200, 220),
         "WorktreeRemove" => egui::Color32::from_rgb(80, 200, 220),
         "PreCompact" => egui::Color32::from_rgb(160, 160, 160),
+        "conversation_starts" => egui::Color32::from_rgb(80, 200, 80),
+        "api_request" => egui::Color32::from_rgb(80, 200, 220),
+        "tool_decision" => egui::Color32::from_rgb(80, 200, 220),
+        "tool_result" => egui::Color32::from_rgb(80, 130, 220),
+        "sse_event" => egui::Color32::from_rgb(160, 160, 160),
         _ => egui::Color32::from_rgb(200, 200, 200),
     }
 }
@@ -54,6 +59,11 @@ const EVENT_TYPES: &[(&str, &str)] = &[
     ("WorktreeCreate", "工作树创建"),
     ("WorktreeRemove", "工作树删除"),
     ("PreCompact", "压缩前"),
+    ("conversation_starts", "CX会话开始"),
+    ("api_request", "CX API请求"),
+    ("tool_decision", "CX工具决策"),
+    ("tool_result", "CX工具结果"),
+    ("sse_event", "CX SSE事件"),
 ];
 
 /// 根据事件名查找显示文本
@@ -155,6 +165,21 @@ impl eframe::App for MonitorApp {
                                     egui::RichText::new(time)
                                         .monospace()
                                         .color(egui::Color32::from_rgb(120, 120, 120)),
+                                );
+
+                                // source 标签 (在时间之后，事件类型之前)
+                                let source_color = match entry.source.as_str() {
+                                    "cx" => egui::Color32::from_rgb(200, 100, 220),  // 紫色
+                                    _ => egui::Color32::from_rgb(80, 200, 220),       // 青色
+                                };
+                                let source_label = match entry.source.as_str() {
+                                    "cx" => "CX",
+                                    _ => "CC",
+                                };
+                                ui.label(
+                                    egui::RichText::new(source_label)
+                                        .monospace()
+                                        .color(source_color),
                                 );
 
                                 // 事件类型

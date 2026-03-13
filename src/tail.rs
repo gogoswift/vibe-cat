@@ -28,6 +28,11 @@ fn colorize_event_type(event_type: &str) -> ColoredString {
         "WorktreeCreate" => event_type.cyan(),
         "WorktreeRemove" => event_type.cyan(),
         "PreCompact" => event_type.white().dimmed(),
+        "conversation_starts" => event_type.green().bold(),
+        "api_request" => event_type.cyan(),
+        "tool_decision" => event_type.cyan(),
+        "tool_result" => event_type.blue(),
+        "sse_event" => event_type.white().dimmed(),
         _ => event_type.normal(),
     }
 }
@@ -40,6 +45,11 @@ fn format_entry(entry: &LogEntry) -> String {
         &entry.timestamp
     };
 
+    let source_tag = match entry.source.as_str() {
+        "cx" => "[CX]".magenta().to_string(),
+        _ => "[CC]".cyan().to_string(),
+    };
+
     let event_colored = colorize_event_type(&entry.event_type);
 
     let tool_part = entry
@@ -49,8 +59,9 @@ fn format_entry(entry: &LogEntry) -> String {
         .unwrap_or_default();
 
     format!(
-        "{} {:>22}{} {}",
+        "{} {} {:>22}{} {}",
         time.dimmed(),
+        source_tag,
         event_colored,
         tool_part,
         entry.summary.white()
