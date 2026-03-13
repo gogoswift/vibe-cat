@@ -1687,6 +1687,12 @@ fn update_mouse_passthrough(_cat_rect: egui::Rect, _is_dragging: bool) {}
 // ============================================================
 
 pub fn run_cat() {
+    // 后台启动 Codex OTel 接收服务器
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Cannot create tokio runtime");
+        rt.block_on(crate::server::run_server(4318));
+    });
+
     #[cfg(target_os = "macos")]
     let (initial_pos, dock_left, dock_right, visible_bottom) = {
         if let Some((screen_w, vis_bottom, _menu_bar_h)) = get_macos_screen_info() {

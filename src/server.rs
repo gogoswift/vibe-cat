@@ -179,13 +179,18 @@ pub async fn run_server(port: u16) {
     let app = Router::new().route("/v1/logs", post(receive_logs));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
+
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[server] Cannot bind to 127.0.0.1:{} ({}). Another instance may be running.", port, e);
+            return;
+        }
+    };
+
     eprintln!("[server] Codex OTel receiver listening on http://{}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .unwrap_or_else(|e| panic!("Cannot bind to 127.0.0.1:{}. Is another server already running? Error: {}", port, e));
-
-    axum::serve(listener, app)
-        .await
-        .expect("Server error");
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("[server] Server error: {}", e);
+    }
 }
