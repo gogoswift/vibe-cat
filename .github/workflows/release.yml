@@ -1,0 +1,58 @@
+name: Build & Release (macOS)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action/setup@v1
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle
+
+      - name: Build .app bundle
+        run: cargo bundle --release --target ${{ matrix.target }}
+
+      - name: Package .app as zip
+        run: |
+          cd target/${{ matrix.target }}/release/bundle/osx
+          zip -r ../../../../../"Claude-Hook-Monitor-${{ matrix.target }}.zip" "Claude Hook Monitor.app"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Claude-Hook-Monitor-${{ matrix.target }}
+          path: Claude-Hook-Monitor-${{ matrix.target }}.zip
+
+  release:
+    needs: build-macos
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

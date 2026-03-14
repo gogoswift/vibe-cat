@@ -2026,6 +2026,7 @@ fn setup_window_appearance() {
             let _: () = objc2::msg_send![&*window, setIgnoresMouseEvents: true];
             // 去掉窗口阴影
             let _: () = objc2::msg_send![&*window, setHasShadow: false];
+
         }
     }
 }

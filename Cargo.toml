@@ -30,3 +30,10 @@ objc2-app-kit = { version = "0.2", features = [
     "NSApplication", "NSRunningApplication",
 ] }
 objc2-foundation = "0.2"
+
+[package.metadata.bundle]
+name = "Claude Hook Monitor"
+identifier = "com.eko.claude-hook-monitor"
+category = "Developer Tool"
+short_description = "Claude Code Hook 事件监听器"
+osx_minimum_system_version = "12.0"

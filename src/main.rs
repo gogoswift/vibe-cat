@@ -22,7 +22,7 @@ use colored::*;
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -90,13 +90,29 @@ fn main() {
     #[cfg(target_os = "macos")]
     cat::hide_dock_icon();
 
-    let cli = Cli::parse();
+    // 禁用 macOS AutoFill，防止系统为 eframe 窗口派生大量 AutoFill XPC 进程
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::runtime::AnyObject;
+        unsafe {
+            let cls = objc2::runtime::AnyClass::get("NSUserDefaults").unwrap();
+            let defaults: *mut AnyObject = objc2::msg_send![cls, standardUserDefaults];
+            let key: *mut AnyObject = objc2::msg_send![
+                objc2::runtime::AnyClass::get("NSString").unwrap(),
+                stringWithUTF8String: c"AutoFillEnabled".as_ptr()
+            ];
+            let _: () = objc2::msg_send![defaults, setBool: false forKey: key];
+        }
+    }
 
-    if cli.command.needs_auto_setup() {
+    let cli = Cli::parse();
+    let command = cli.command.unwrap_or(Commands::Cat);
+
+    if command.needs_auto_setup() {
         installer::auto_setup();
     }
 
-    match cli.command {
+    match command {
         Commands::Listen => handle_listen(),
         Commands::Install { scope } => handle_install(&scope),
         Commands::Tail { filter } => tail::tail_log(filter.as_deref()),
