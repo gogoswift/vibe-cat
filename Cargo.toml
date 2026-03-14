@@ -38,3 +38,8 @@ category = "Developer Tool"
 short_description = "Claude Code Hook 事件监听器"
 osx_minimum_system_version = "12.0"
 icon = ["src/assets/AppIcon.icns"]
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"

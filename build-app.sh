@@ -10,9 +10,7 @@ else
     APP_PATH="target/release/bundle/osx/VibeCat.app"
 fi
 
-# 在 Info.plist 中添加 LSUIElement，防止 Dock 图标闪现
-PLIST="$APP_PATH/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null || \
-/usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST"
+# 用项目中的 Info.plist 替换自动生成的（包含 LSUIElement=true）
+cp Info.plist "$APP_PATH/Contents/Info.plist"
 
-echo "Built: $APP_PATH (LSUIElement=true, no Dock icon)"
+echo "Built: $APP_PATH"
