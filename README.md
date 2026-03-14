@@ -2,6 +2,11 @@
 
 [English](#english) | [中文](#中文)
 
+<p align="center">
+  <img src="assets/1.png" width="45%" />
+  <img src="assets/2.png" width="45%" />
+</p>
+
 ---
 
 <a name="english"></a>
