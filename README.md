@@ -44,15 +44,6 @@ vibe-cat cat
 vibe-cat server
 ```
 
-#### Codex Integration
-
-To send Codex telemetry to Vibe Cat, set the OTel endpoint before launching Codex:
-
-```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-codex
-```
-
 ### Cat Behavior
 
 | AI Agent State | Cat Animation |
@@ -105,15 +96,6 @@ vibe-cat cat
 
 # 启动 OTel 接收服务器用于 Codex（默认端口 4318）
 vibe-cat server
-```
-
-#### Codex 集成
-
-启动 Codex 前设置 OTel 端点即可将遥测数据发送到 Vibe Cat：
-
-```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-codex
 ```
 
 ### 猫的行为
