@@ -34,16 +34,6 @@ cargo build --release
 cp target/release/claude-hook-monitor /usr/local/bin/vibe-cat
 ```
 
-### Usage
-
-```bash
-# Launch the desktop cat
-vibe-cat cat
-
-# Start OTel receiver for Codex (default port 4318)
-vibe-cat server
-```
-
 ### Cat Behavior
 
 | AI Agent State | Cat Animation |
@@ -86,16 +76,6 @@ git clone https://github.com/gogoswift/vibe-cat.git
 cd vibe-cat
 cargo build --release
 cp target/release/claude-hook-monitor /usr/local/bin/vibe-cat
-```
-
-### 使用方法
-
-```bash
-# 启动桌面猫
-vibe-cat cat
-
-# 启动 OTel 接收服务器用于 Codex（默认端口 4318）
-vibe-cat server
 ```
 
 ### 猫的行为
