@@ -2126,7 +2126,8 @@ pub fn run_cat() {
             .with_position(initial_pos)
             .with_decorations(false)
             .with_transparent(true)
-            .with_always_on_top(),
+            .with_always_on_top()
+            .with_taskbar(false),
         ..Default::default()
     };
 

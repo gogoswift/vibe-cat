@@ -25,18 +25,18 @@ jobs:
         run: cargo install cargo-bundle
 
       - name: Build .app bundle
-        run: cargo bundle --release --target ${{ matrix.target }}
+        run: bash build-app.sh ${{ matrix.target }}
 
       - name: Package .app as zip
         run: |
           cd target/${{ matrix.target }}/release/bundle/osx
-          zip -r ../../../../../"Claude-Hook-Monitor-${{ matrix.target }}.zip" "Claude Hook Monitor.app"
+          zip -r ../../../../../"VibeCat-${{ matrix.target }}.zip" "VibeCat.app"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Claude-Hook-Monitor-${{ matrix.target }}
-          path: Claude-Hook-Monitor-${{ matrix.target }}.zip
+          name: VibeCat-${{ matrix.target }}
+          path: VibeCat-${{ matrix.target }}.zip
 
   release:
     needs: build-macos
