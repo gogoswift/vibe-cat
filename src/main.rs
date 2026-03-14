@@ -118,17 +118,7 @@ fn main() {
         Commands::Tail { filter } => tail::tail_log(filter.as_deref()),
         Commands::Status => tail::show_status(),
         Commands::Gui { filter } => {
-            // 同时启动桌面宠物猫
-            let exe = std::env::current_exe().expect("Cannot get exe path");
-            let mut cat_proc = std::process::Command::new(&exe)
-                .arg("cat")
-                .spawn()
-                .ok();
             gui::run_gui(filter.as_deref());
-            // GUI 关闭后结束猫进程
-            if let Some(ref mut proc) = cat_proc {
-                let _ = proc.kill();
-            }
         }
         Commands::Cat => cat::run_cat(),
         Commands::Approve => approve::handle_approve(),

@@ -175,6 +175,11 @@ fn register_tray_handler_class() -> &'static AnyClass {
         CX_ENABLED.fetch_xor(true, Ordering::Relaxed);
     }
 
+    extern "C" fn open_gui(_this: &AnyObject, _cmd: Sel, _sender: &AnyObject) {
+        let exe = std::env::current_exe().unwrap_or_default();
+        let _ = std::process::Command::new(exe).arg("gui").spawn();
+    }
+
     extern "C" fn quit_app(_this: &AnyObject, _cmd: Sel, _sender: &AnyObject) {
         unsafe {
             let mtm = MainThreadMarker::new_unchecked();
@@ -199,6 +204,10 @@ fn register_tray_handler_class() -> &'static AnyClass {
             builder.add_method(
                 sel!(toggleCX:),
                 toggle_cx as extern "C" fn(_, _, _),
+            );
+            builder.add_method(
+                sel!(openGui:),
+                open_gui as extern "C" fn(_, _, _),
             );
             builder.add_method(
                 sel!(quitApp:),
@@ -378,8 +387,22 @@ pub fn create_status_item(nsimages: &[Vec<Retained<NSImage>>]) -> Retained<NSSta
         std::mem::forget(cx_item);
 
         // 分隔线
-        let sep = NSMenuItem::separatorItem(mtm);
-        menu.addItem(&sep);
+        let sep1 = NSMenuItem::separatorItem(mtm);
+        menu.addItem(&sep1);
+
+        // 事件监控
+        let gui_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+            mtm.alloc(),
+            &NSString::from_str("事件监控"),
+            Some(sel!(openGui:)),
+            &NSString::from_str("e"),
+        );
+        let _: () = msg_send![&*gui_item, setTarget: menu_handler];
+        menu.addItem(&gui_item);
+
+        // 分隔线
+        let sep2 = NSMenuItem::separatorItem(mtm);
+        menu.addItem(&sep2);
 
         // 退出
         let quit_item = NSMenuItem::initWithTitle_action_keyEquivalent(
