@@ -30,8 +30,8 @@ Vibe Cat is a macOS desktop pet that sits on your Dock and reacts to [Claude Cod
 ```bash
 git clone https://github.com/gogoswift/vibe-cat.git
 cd vibe-cat
-cargo build --release
-cp target/release/claude-hook-monitor /usr/local/bin/vibe-cat
+./build-app.sh
+# Built: target/release/bundle/osx/VibeCat.app
 ```
 
 ### Cat Behavior
@@ -74,8 +74,8 @@ Vibe Cat 是一个 macOS 桌面宠物，趴在你的 Dock 上，实时反映 [Cl
 ```bash
 git clone https://github.com/gogoswift/vibe-cat.git
 cd vibe-cat
-cargo build --release
-cp target/release/claude-hook-monitor /usr/local/bin/vibe-cat
+./build-app.sh
+# Built: target/release/bundle/osx/VibeCat.app
 ```
 
 ### 猫的行为

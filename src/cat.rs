@@ -73,13 +73,13 @@ fn state_animations(state: ClaudeState) -> &'static [usize] {
 /// 事件类型 -> Claude 状态
 fn event_type_to_state(event_type: &str) -> ClaudeState {
     match event_type {
-        "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse"
+        "UserPromptSubmit" | "PreToolUse" | "PostToolUse"
         | "PostToolUseFailure" | "SubagentStart" | "SubagentStop" | "PreCompact"
-        | "InstructionsLoaded" | "WorktreeCreate" | "WorktreeRemove"
+        | "WorktreeCreate" | "WorktreeRemove"
         | "api_request" | "tool_decision" | "tool_result" | "sse_event" => {
             ClaudeState::Active
         }
-        "Stop" | "PermissionRequest" | "TaskCompleted" | "TeammateIdle" | "Notification" => {
+        "SessionStart" | "Stop" | "PermissionRequest" | "TaskCompleted" | "TeammateIdle" | "Notification" => {
             ClaudeState::Idle
         }
         "SessionEnd" => ClaudeState::Offline,
@@ -604,7 +604,7 @@ impl UnifiedCatApp {
             if !is_new { continue; }
             let is_subagent = entry.raw.get("agent_type").and_then(|v| v.as_str()).is_some();
             if is_subagent { continue; }
-            if entry.event_type == "ConfigChange" { continue; }
+            if entry.event_type == "ConfigChange" || entry.event_type == "InstructionsLoaded" { continue; }
             if event_type_to_state(&entry.event_type) == ClaudeState::Active {
                 if entry.source == "cx" {
                     had_active_in_new_cx_events = true;
@@ -617,7 +617,7 @@ impl UnifiedCatApp {
         // 找最后一条 cc 主代理事件来决定主猫状态（排除 cx 事件）
         let last_non_subagent = if cc_on {
             entries.iter().rev().find(|e| {
-                e.source != "cx" && e.event_type != "ConfigChange" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
+                e.source != "cx" && e.event_type != "ConfigChange" && e.event_type != "InstructionsLoaded" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
             })
         } else {
             None
@@ -675,7 +675,7 @@ impl UnifiedCatApp {
         // ---- cx 主猫状态 ----
         let last_cx_event = if cx_on {
             entries.iter().rev().find(|e| {
-                e.source == "cx" && e.event_type != "ConfigChange" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
+                e.source == "cx" && e.event_type != "ConfigChange" && e.event_type != "InstructionsLoaded" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
             })
         } else {
             None
