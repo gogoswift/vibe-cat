@@ -17,7 +17,7 @@ use eframe::egui;
 /// 二维矩形（point 坐标系）。
 ///
 /// 语义与边界：
-/// - `x`/`y` 为左上角原点，`width`/`height` 为非负尺寸。
+/// - `x`/`y` 的语义由调用方坐标系定义，`width`/`height` 为非负尺寸。
 /// - 本结构只承载几何数据，不负责坐标系转换。
 ///
 /// 关键副作用：
@@ -34,7 +34,7 @@ impl Rect {
     /// 构造一个矩形。
     ///
     /// 入参：
-    /// - `x`/`y`：左上角坐标（point）。
+    /// - `x`/`y`：调用方坐标系下的基准点（point）。
     /// - `width`/`height`：矩形尺寸（point），调用方应保证非负。
     ///
     /// 返回：
@@ -156,22 +156,21 @@ impl DockSnapshot {
     ///
     /// 入参：
     /// - `anchor_screen_id`：目标屏幕标识。
-    /// - `mode`：本任务只接受 `DockPlacementMode::Floor`。
     /// - `autohide`：Dock 是否自动隐藏。
     ///
     /// 返回：
-    /// - `DockSnapshot`；调用方需保证传入模式符合约定。
+    /// - 固定 `mode=Floor` 且 `dock_frame=None` 的 `DockSnapshot`。
     ///
     /// 错误处理：
-    /// - 不返回错误；若传入非 `Floor` 模式，后续布局结果是否合理由调用方负责。
+    /// - 不返回错误；构造函数内部保证模式合法，避免生成无效状态。
     ///
     /// 关键副作用：
     /// - 无。
-    pub fn side(anchor_screen_id: impl Into<String>, mode: DockPlacementMode, autohide: bool) -> Self {
+    pub fn side(anchor_screen_id: impl Into<String>, autohide: bool) -> Self {
         Self {
             anchor_screen_id: anchor_screen_id.into(),
             dock_frame: None,
-            mode,
+            mode: DockPlacementMode::Floor,
             autohide,
         }
     }
@@ -287,11 +286,13 @@ mod tests {
             Rect::new(96.0, 25.0, 1416.0, 957.0),
             2.0,
         )];
-        let dock = DockSnapshot::side("primary", DockPlacementMode::Floor, true);
+        let dock = DockSnapshot::side("primary", true);
 
         let layout = compute_cat_window_layout(&screens, &dock, 96.0, 22.0).unwrap();
 
         assert_eq!(layout.window_origin.x, 96.0);
+        assert_eq!(layout.window_origin.y, 864.0);
         assert_eq!(layout.walk_bounds.width, 1416.0);
+        assert_eq!(layout.mode, DockPlacementMode::Floor);
     }
 }
