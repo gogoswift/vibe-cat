@@ -421,6 +421,7 @@ struct DockBoundsResult {
 /// - `window_origin` 记录窗口定位基准：`x` 为窗口左上角，`y` 为基线换算值。
 /// - `walk_bounds` 描述猫可活动区域，宽度同时作为窗口宽度来源。
 /// - `dock_mode` 与 `anchor_screen_id` 共同标识布局策略与锚定屏幕。
+/// - `dock_autohide` 记录 Dock 是否自动隐藏，供轮询节流策略使用。
 ///
 /// 关键副作用：
 /// - 无。
@@ -430,6 +431,7 @@ struct AppliedLayout {
     window_origin: egui::Pos2,
     walk_bounds: crate::cat_layout::Rect,
     dock_mode: crate::cat_layout::DockPlacementMode,
+    dock_autohide: bool,
     window_width: f32,
 }
 
@@ -456,6 +458,7 @@ impl AppliedLayout {
             window_origin: egui::pos2(walk_bounds.x, base_y),
             walk_bounds,
             dock_mode: sample.dock_snapshot.mode,
+            dock_autohide: sample.dock_snapshot.autohide,
             window_width: sample.walk_bounds.width,
         }
     }
@@ -481,8 +484,34 @@ impl AppliedLayout {
             window_origin: egui::pos2(left, base_y),
             walk_bounds: crate::cat_layout::Rect::new(left, base_y, width, 0.0),
             dock_mode: crate::cat_layout::DockPlacementMode::Floor,
+            dock_autohide: false,
             window_width: width,
         }
+    }
+}
+
+/// 根据 Dock 自动隐藏状态决定后台刷新节流间隔。
+///
+/// 语义与边界：
+/// - 自动隐藏开启时使用更快轮询，降低 Dock 弹出/收起带来的定位滞后。
+/// - 自动隐藏关闭时使用慢轮询，避免不必要的后台采样。
+///
+/// 入参：
+/// - `autohide`：`true` 表示 Dock 自动隐藏已开启。
+///
+/// 返回：
+/// - `Duration::from_millis(250)`（`autohide=true`）或 `Duration::from_secs(5)`（`autohide=false`）。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误。
+///
+/// 关键副作用：
+/// - 无。
+fn refresh_interval(autohide: bool) -> Duration {
+    if autohide {
+        Duration::from_millis(250)
+    } else {
+        Duration::from_secs(5)
     }
 }
 
@@ -520,6 +549,7 @@ fn layout_changed(previous: Option<&AppliedLayout>, next: &AppliedLayout) -> boo
                 || !eq_f32(current.walk_bounds.y, next.walk_bounds.y)
                 || !eq_f32(current.walk_bounds.width, next.walk_bounds.width)
                 || !eq_f32(current.walk_bounds.height, next.walk_bounds.height)
+                || current.dock_autohide != next.dock_autohide
                 || !eq_f32(current.window_width, next.window_width)
         }
         None => true,
@@ -1258,8 +1288,14 @@ impl eframe::App for UnifiedCatApp {
             }
         }
 
-        // ---- 后台 Dock 刷新（每 5 秒触发，不阻塞 UI） ----
-        if now.duration_since(self.last_dock_refresh) > Duration::from_secs(5) {
+        // ---- 后台 Dock 刷新（自动隐藏时加速，不阻塞 UI） ----
+        let dock_refresh_interval = refresh_interval(
+            self.applied_layout
+                .as_ref()
+                .map(|layout| layout.dock_autohide)
+                .unwrap_or(false),
+        );
+        if now.duration_since(self.last_dock_refresh) > dock_refresh_interval {
             self.last_dock_refresh = now;
             self.start_dock_refresh_bg();
         }
@@ -2887,9 +2923,11 @@ pub fn run_cat() {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    use std::time::Duration;
+
     use super::{
         build_floor_mode_sample, build_screen_id, layout_changed, legacy_visible_bottom,
-        main_screen_snapshot, resolve_dock_anchor_screen, resolve_next_applied_layout,
+        main_screen_snapshot, refresh_interval, resolve_dock_anchor_screen, resolve_next_applied_layout,
         select_side_dock_anchor_screen, AppliedLayout, MacScreenSnapshot,
     };
 
@@ -2921,6 +2959,7 @@ mod tests {
             window_origin: eframe::egui::pos2(window_origin_x, base_y),
             walk_bounds: crate::cat_layout::Rect::new(window_origin_x, 0.0, width, 64.0),
             dock_mode: mode,
+            dock_autohide: false,
             window_width: width,
         }
     }
@@ -3092,5 +3131,11 @@ mod tests {
 
         let dock_screen = select_side_dock_anchor_screen(&screens, &main, "right");
         assert_eq!(dock_screen.id, secondary.id);
+    }
+
+    #[test]
+    fn autohide_layout_uses_fast_refresh_interval() {
+        assert_eq!(refresh_interval(true), Duration::from_millis(250));
+        assert_eq!(refresh_interval(false), Duration::from_secs(5));
     }
 }
