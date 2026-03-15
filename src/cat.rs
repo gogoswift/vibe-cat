@@ -526,6 +526,35 @@ fn layout_changed(previous: Option<&AppliedLayout>, next: &AppliedLayout) -> boo
     }
 }
 
+/// 基于采样布局计算下一次“已应用布局”状态。
+///
+/// 语义与边界：
+/// - `None` 表示无需推进已应用布局状态。
+/// - 该函数仅决定状态推进，不负责窗口命令发送。
+///
+/// 入参：
+/// - `previous`：当前已应用布局快照，可为空。
+/// - `sampled`：本轮采样得到的布局快照。
+///
+/// 返回：
+/// - 下一次应保存的已应用布局快照；若无需推进返回 `None`。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；由调用方保证 `sampled` 有效。
+///
+/// 关键副作用：
+/// - 无。
+fn resolve_next_applied_layout(
+    previous: Option<&AppliedLayout>,
+    sampled: &AppliedLayout,
+) -> Option<AppliedLayout> {
+    if layout_changed(previous, sampled) {
+        Some(sampled.clone())
+    } else {
+        None
+    }
+}
+
 /// Dock 水平边界与锚点屏幕。
 ///
 /// 语义与边界：
@@ -1104,34 +1133,37 @@ impl UnifiedCatApp {
     /// - 不返回错误；共享状态加锁失败时 panic（保持当前实现风格）。
     ///
     /// 关键副作用：
-    /// - 会钳位主猫与 mini 猫的 `x_offset`，避免超出新活动范围。
+    /// - 仅在布局确实变化时，才会推进已应用布局并钳位猫的 `x_offset`。
     fn apply_dock_result(&mut self) -> bool {
         let result = {
             let mut lock = self.dock_result.lock().unwrap();
             lock.take()
         };
         if let Some(bounds) = result {
-            let changed = layout_changed(self.applied_layout.as_ref(), &bounds.layout);
-            self.applied_layout = Some(bounds.layout.clone());
-            self.dock_left = bounds.layout.window_origin.x;
-            self.window_width = bounds.layout.window_width;
-            self.dock_right = self.dock_left + self.window_width;
-            self.base_y = bounds.layout.window_origin.y;
-
-            // 钳位所有猫（内联以避免借用冲突）
-            let ww = self.window_width;
+            if let Some(applied_layout) =
+                resolve_next_applied_layout(self.applied_layout.as_ref(), &bounds.layout)
             {
-                let max_x = (ww - self.main_cat.max_width).max(0.0);
-                if self.main_cat.x_offset < 0.0 { self.main_cat.x_offset = 0.0; }
-                if self.main_cat.x_offset > max_x { self.main_cat.x_offset = max_x; }
-            }
-            for mc in &mut self.mini_cats {
-                let max_x = (ww - mc.max_width).max(0.0);
-                if mc.x_offset < 0.0 { mc.x_offset = 0.0; }
-                if mc.x_offset > max_x { mc.x_offset = max_x; }
-            }
+                self.dock_left = applied_layout.window_origin.x;
+                self.window_width = applied_layout.window_width;
+                self.dock_right = self.dock_left + self.window_width;
+                self.base_y = applied_layout.window_origin.y;
+                self.applied_layout = Some(applied_layout);
 
-            return changed;
+                // 钳位所有猫（内联以避免借用冲突）
+                let ww = self.window_width;
+                {
+                    let max_x = (ww - self.main_cat.max_width).max(0.0);
+                    if self.main_cat.x_offset < 0.0 { self.main_cat.x_offset = 0.0; }
+                    if self.main_cat.x_offset > max_x { self.main_cat.x_offset = max_x; }
+                }
+                for mc in &mut self.mini_cats {
+                    let max_x = (ww - mc.max_width).max(0.0);
+                    if mc.x_offset < 0.0 { mc.x_offset = 0.0; }
+                    if mc.x_offset > max_x { mc.x_offset = max_x; }
+                }
+
+                return true;
+            }
         }
         false
     }
@@ -2857,8 +2889,8 @@ pub fn run_cat() {
 mod tests {
     use super::{
         build_floor_mode_sample, build_screen_id, layout_changed, legacy_visible_bottom,
-        main_screen_snapshot, resolve_dock_anchor_screen, select_side_dock_anchor_screen,
-        AppliedLayout, MacScreenSnapshot,
+        main_screen_snapshot, resolve_dock_anchor_screen, resolve_next_applied_layout,
+        select_side_dock_anchor_screen, AppliedLayout, MacScreenSnapshot,
     };
 
     fn make_screen(
@@ -2911,6 +2943,27 @@ mod tests {
         );
 
         assert!(layout_changed(Some(&previous), &next));
+    }
+
+    #[test]
+    fn applied_layout_should_not_advance_when_layout_is_unchanged() {
+        let applied = make_layout(
+            "main",
+            0.0,
+            1092.0,
+            1200.0,
+            crate::cat_layout::DockPlacementMode::Bottom,
+        );
+        let sampled = make_layout(
+            "main",
+            0.2,
+            1092.3,
+            1200.2,
+            crate::cat_layout::DockPlacementMode::Bottom,
+        );
+
+        assert!(!layout_changed(Some(&applied), &sampled));
+        assert!(resolve_next_applied_layout(Some(&applied), &sampled).is_none());
     }
 
     #[test]
