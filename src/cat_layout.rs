@@ -144,30 +144,53 @@ pub enum DockPlacementMode {
 pub struct DockSnapshot {
     pub anchor_screen_id: String,
     pub dock_frame: Option<Rect>,
+    /// Bottom 模式可选的“活动范围”覆盖值。
+    ///
+    /// 语义与边界：
+    /// - 仅在 `mode=Bottom` 时有意义，用于描述猫窗口真正可活动的水平范围。
+    /// - 典型场景：运行时从 AX 读到的 `dock_frame` 可能比实际可活动范围更窄/更宽，
+    ///   但窗口宽度需要跟随 `left/right` 估算边界，而不是 Dock 本体矩形。
+    /// - `None` 表示沿用 `dock_frame` 作为活动范围（保持历史纯函数行为）。
+    ///
+    /// 关键副作用：
+    /// - 无。
+    pub walk_bounds_override: Option<Rect>,
     pub mode: DockPlacementMode,
     pub autohide: bool,
 }
 
 impl DockSnapshot {
-    /// 构造底部 Dock 快照。
+    /// 构造底部 Dock 快照，并显式指定可活动范围覆盖值。
+    ///
+    /// 语义与边界：
+    /// - `dock_frame` 仍表示 Dock 本体矩形，用于计算停靠基线与垂直位置。
+    /// - `walk_bounds_override` 用于覆盖窗口宽度与水平活动范围（例如由 `left/right` 推断）。
+    /// - 仅在 `mode=Bottom` 下生效；调用方应保证覆盖值与 `dock_frame` 同属一个坐标系。
     ///
     /// 入参：
     /// - `anchor_screen_id`：目标屏幕标识。
-    /// - `dock_frame`：Dock 矩形（point）。
+    /// - `dock_frame`：Dock 本体矩形（point）。
+    /// - `walk_bounds_override`：活动范围覆盖矩形（point）。
     /// - `autohide`：Dock 是否自动隐藏。
     ///
     /// 返回：
-    /// - `mode=Bottom` 的 `DockSnapshot`。
+    /// - `mode=Bottom` 且携带活动范围覆盖值的 `DockSnapshot`。
     ///
     /// 错误处理：
-    /// - 不返回错误；调用方需保证 `dock_frame` 与 `anchor_screen_id` 对应同一屏幕。
+    /// - 不返回错误；调用方需保证覆盖值语义正确。
     ///
     /// 关键副作用：
     /// - 无。
-    pub fn bottom(anchor_screen_id: impl Into<String>, dock_frame: Rect, autohide: bool) -> Self {
+    pub fn bottom_with_walk_bounds(
+        anchor_screen_id: impl Into<String>,
+        dock_frame: Rect,
+        walk_bounds_override: Rect,
+        autohide: bool,
+    ) -> Self {
         Self {
             anchor_screen_id: anchor_screen_id.into(),
             dock_frame: Some(dock_frame),
+            walk_bounds_override: Some(walk_bounds_override),
             mode: DockPlacementMode::Bottom,
             autohide,
         }
@@ -191,6 +214,7 @@ impl DockSnapshot {
         Self {
             anchor_screen_id: anchor_screen_id.into(),
             dock_frame: None,
+            walk_bounds_override: None,
             mode: DockPlacementMode::Floor,
             autohide,
         }
@@ -246,10 +270,17 @@ pub fn compute_cat_window_layout(
     match dock.mode {
         DockPlacementMode::Bottom => {
             let dock_frame = dock.dock_frame.as_ref()?;
+            let walk_bounds = dock
+                .walk_bounds_override
+                .as_ref()
+                .unwrap_or(dock_frame);
             Some(CatWindowLayout {
                 anchor_screen_id: screen.id.clone(),
-                window_origin: egui::pos2(dock_frame.x, dock_frame.y - cat_height - bubble_padding),
-                walk_bounds: dock_frame.clone(),
+                window_origin: egui::pos2(
+                    walk_bounds.x,
+                    dock_frame.y - cat_height - bubble_padding,
+                ),
+                walk_bounds: walk_bounds.clone(),
                 mode: DockPlacementMode::Bottom,
             })
         }
@@ -290,13 +321,39 @@ mod tests {
                 1.0,
             ),
         ];
-        let dock = DockSnapshot::bottom("external", Rect::new(2140.0, 980.0, 900.0, 80.0), false);
+        let dock_frame = Rect::new(2140.0, 980.0, 900.0, 80.0);
+        let dock = DockSnapshot::bottom_with_walk_bounds(
+            "external",
+            dock_frame.clone(),
+            dock_frame,
+            false,
+        );
 
         let layout = compute_cat_window_layout(&screens, &dock, 96.0, 22.0).unwrap();
 
         assert_eq!(layout.anchor_screen_id, "external");
         assert_eq!(layout.window_origin.x, 2140.0);
         assert!(layout.window_origin.y < 980.0);
+    }
+
+    #[test]
+    fn bottom_dock_uses_walk_bounds_override_for_window_width_and_origin_x() {
+        let screens = vec![ScreenSnapshot::new(
+            "primary",
+            Rect::new(0.0, 0.0, 1728.0, 1117.0),
+            Rect::new(0.0, 25.0, 1728.0, 1070.0),
+            2.0,
+        )];
+
+        let dock_frame = Rect::new(200.0, 980.0, 400.0, 80.0);
+        let walk_bounds = Rect::new(0.0, 980.0, 1728.0, 80.0);
+        let dock = DockSnapshot::bottom_with_walk_bounds("primary", dock_frame, walk_bounds, false);
+
+        let layout = compute_cat_window_layout(&screens, &dock, 96.0, 22.0).unwrap();
+
+        assert_eq!(layout.walk_bounds.x, 0.0);
+        assert_eq!(layout.walk_bounds.width, 1728.0);
+        assert_eq!(layout.window_origin.x, 0.0);
     }
 
     #[test]
@@ -333,7 +390,8 @@ mod tests {
                 2.0,
             ),
         ];
-        let dock = DockSnapshot::bottom("left", Rect::new(-1200.0, 820.0, 800.0, 64.0), false);
+        let dock_frame = Rect::new(-1200.0, 820.0, 800.0, 64.0);
+        let dock = DockSnapshot::bottom_with_walk_bounds("left", dock_frame.clone(), dock_frame, false);
 
         let layout = compute_cat_window_layout(&screens, &dock, 96.0, 22.0).unwrap();
 

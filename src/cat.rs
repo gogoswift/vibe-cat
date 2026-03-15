@@ -436,33 +436,6 @@ struct AppliedLayout {
 }
 
 impl AppliedLayout {
-    /// 基于 Dock 采样结果构建应用布局快照。
-    ///
-    /// 入参：
-    /// - `sample`：Dock 采样结果，需来自同一轮屏幕快照。
-    /// - `base_y`：窗口 Y 轴换算所需的基线值（point）。
-    ///
-    /// 返回：
-    /// - 可直接用于 `apply_dock_result` 的完整布局快照。
-    ///
-    /// 错误处理与失败场景：
-    /// - 不返回错误；调用方需保证 `sample.walk_bounds.width > 0`。
-    ///
-    /// 关键副作用：
-    /// - 无。
-    #[cfg(target_os = "macos")]
-    fn from_dock_sample(sample: &DockPlacementSample, base_y: f32) -> Self {
-        let walk_bounds = sample.walk_bounds.clone();
-        Self {
-            anchor_screen_id: sample.dock_snapshot.anchor_screen_id.clone(),
-            window_origin: egui::pos2(walk_bounds.x, base_y),
-            walk_bounds,
-            dock_mode: sample.dock_snapshot.mode,
-            dock_autohide: sample.dock_snapshot.autohide,
-            window_width: sample.walk_bounds.width,
-        }
-    }
-
     /// 构建跨平台兜底布局快照。
     ///
     /// 入参：
@@ -488,6 +461,71 @@ impl AppliedLayout {
             window_width: width,
         }
     }
+}
+
+/// 使用纯布局计算结果构建运行时 `AppliedLayout`。
+///
+/// 语义与边界：
+/// - 运行时窗口 Y 坐标仍沿用历史 “`top - visible_frame.y`” 基线语义（见 `legacy_visible_bottom`）。
+/// - 水平方向（窗口宽度/活动范围）完全复用 `cat_layout::compute_cat_window_layout` 的输出，
+///   避免测试与运行时逻辑分叉。
+/// - `dock_autohide` 仅做透传，不参与本函数内的几何推断。
+///
+/// 入参：
+/// - `screens`：当前轮次采样得到的 macOS 屏幕快照。
+/// - `fallback_screen`：兜底屏幕（通常为主屏），用于计算基线时的回退。
+/// - `dock_sample`：Dock 采样结果，包含 `DockSnapshot` 与（可选）活动范围覆盖值。
+///
+/// 返回：
+/// - `Some(AppliedLayout)`：输入完整且可计算。
+/// - `None`：找不到锚点屏幕，或 Bottom 模式缺失 Dock 矩形。
+///
+/// 错误处理与失败场景：
+/// - 使用 `Option` 表达可恢复输入缺失，不抛异常。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn compute_applied_layout_for_dock_sample(
+    screens: &[MacScreenSnapshot],
+    fallback_screen: &MacScreenSnapshot,
+    dock_sample: &DockPlacementSample,
+) -> Option<AppliedLayout> {
+    let screen_snapshots: Vec<crate::cat_layout::ScreenSnapshot> = screens
+        .iter()
+        .map(|screen| {
+            crate::cat_layout::ScreenSnapshot::new(
+                screen.id.clone(),
+                screen.frame.clone(),
+                screen.visible_frame.clone(),
+                screen.scale_factor,
+            )
+        })
+        .collect();
+
+    // 运行时当前仍使用固定的窗口底部留白语义（22pt），与历史实现保持一致。
+    let layout = crate::cat_layout::compute_cat_window_layout(
+        &screen_snapshots,
+        &dock_sample.dock_snapshot,
+        CELL_SIZE as f32 * SCALE,
+        22.0,
+    )?;
+
+    let walk_bounds = layout.walk_bounds;
+    let window_width = walk_bounds.width;
+
+    let anchor_screen =
+        screen_by_id(screens, &layout.anchor_screen_id).unwrap_or(fallback_screen);
+    let base_y = legacy_visible_bottom(screens, anchor_screen);
+
+    Some(AppliedLayout {
+        anchor_screen_id: layout.anchor_screen_id,
+        window_origin: egui::pos2(walk_bounds.x, base_y),
+        walk_bounds,
+        dock_mode: layout.mode,
+        dock_autohide: dock_sample.dock_snapshot.autohide,
+        window_width,
+    })
 }
 
 /// 根据 Dock 自动隐藏状态决定后台刷新节流间隔。
@@ -1204,6 +1242,11 @@ impl UnifiedCatApp {
         }
         *refreshing = true;
 
+        let preferred_anchor_screen_id = self
+            .applied_layout
+            .as_ref()
+            .map(|layout| layout.anchor_screen_id.clone());
+
         // AppKit 需主线程调用：这里只采样屏幕快照，后台线程仅做 Dock 边界计算。
         #[cfg(target_os = "macos")]
         let screen_info = get_macos_screen_info();
@@ -1216,16 +1259,20 @@ impl UnifiedCatApp {
             {
                 if let Some(screens) = screen_info {
                     if let Some(fallback_screen) = main_screen_snapshot(&screens) {
-                        let dock_sample = get_dock_sample(&screens, fallback_screen);
+                        let dock_sample = get_dock_sample_with_preferred_anchor(
+                            &screens,
+                            fallback_screen,
+                            preferred_anchor_screen_id.as_deref(),
+                        );
                         if dock_sample.walk_bounds.width > 0.0 {
-                            let dock_screen =
-                                resolve_dock_anchor_screen(&screens, fallback_screen, &dock_sample);
-                            let layout = AppliedLayout::from_dock_sample(
+                            if let Some(layout) = compute_applied_layout_for_dock_sample(
+                                &screens,
+                                fallback_screen,
                                 &dock_sample,
-                                legacy_visible_bottom(&screens, dock_screen),
-                            );
-                            let mut result = result_arc.lock().unwrap();
-                            *result = Some(DockBoundsResult { layout });
+                            ) {
+                                let mut result = result_arc.lock().unwrap();
+                                *result = Some(DockBoundsResult { layout });
+                            }
                         }
                     }
                 }
@@ -1275,6 +1322,11 @@ impl UnifiedCatApp {
                     let max_x = (ww - self.main_cat.max_width).max(0.0);
                     if self.main_cat.x_offset < 0.0 { self.main_cat.x_offset = 0.0; }
                     if self.main_cat.x_offset > max_x { self.main_cat.x_offset = max_x; }
+                }
+                {
+                    let max_x = (ww - self.cx_main_cat.max_width).max(0.0);
+                    if self.cx_main_cat.x_offset < 0.0 { self.cx_main_cat.x_offset = 0.0; }
+                    if self.cx_main_cat.x_offset > max_x { self.cx_main_cat.x_offset = max_x; }
                 }
                 for mc in &mut self.mini_cats {
                     let max_x = (ww - mc.max_width).max(0.0);
@@ -2249,7 +2301,7 @@ fn screen_by_id<'a>(screens: &'a [MacScreenSnapshot], screen_id: &str) -> Option
 ///
 /// 关键副作用：
 /// - 无。
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 fn resolve_dock_anchor_screen<'a>(
     screens: &'a [MacScreenSnapshot],
     fallback_screen: &'a MacScreenSnapshot,
@@ -2348,6 +2400,42 @@ fn select_side_dock_anchor_screen<'a>(
     }
 }
 
+/// 依据 side Dock 朝向选择 Floor 模式锚点屏幕，并优先使用“上一次确认的锚点屏幕”作为兜底。
+///
+/// 语义与边界：
+/// - 当 Dock 自动隐藏且处于隐藏态时，`visible_frame` 的水平内缩可能消失，导致
+///   `select_side_dock_anchor_screen` 无法通过内缩推断 Dock 所在屏幕。
+/// - 本函数允许调用方提供 `preferred_anchor_screen_id`（通常来自上一轮已应用布局），
+///   使得“内缩消失”时依然优先保留已确认的副屏锚点。
+/// - `preferred_anchor_screen_id` 仅用于兜底：当存在有效内缩命中时仍以命中结果为准。
+///
+/// 入参：
+/// - `screens`：同一轮采样得到的全量屏幕快照。
+/// - `fallback_screen`：默认兜底屏幕（通常是主屏）。
+/// - `preferred_anchor_screen_id`：上一次已确认的锚点屏幕 ID，可为空。
+/// - `orientation`：Dock 朝向字符串，仅支持 `"left"` / `"right"`。
+///
+/// 返回：
+/// - Floor 模式使用的锚点屏幕快照。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；ID 不命中时会回退到 `fallback_screen`。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn select_side_dock_anchor_screen_with_preference<'a>(
+    screens: &'a [MacScreenSnapshot],
+    fallback_screen: &'a MacScreenSnapshot,
+    preferred_anchor_screen_id: Option<&str>,
+    orientation: &str,
+) -> &'a MacScreenSnapshot {
+    let fallback = preferred_anchor_screen_id
+        .and_then(|screen_id| screen_by_id(screens, screen_id))
+        .unwrap_or(fallback_screen);
+    select_side_dock_anchor_screen(screens, fallback, orientation)
+}
+
 /// 基于锚点屏幕与水平边界估算 Bottom 模式 Dock 矩形。
 ///
 /// 语义与边界：
@@ -2407,9 +2495,10 @@ fn build_bottom_mode_sample(
         dock_frame.height,
     );
     DockPlacementSample {
-        dock_snapshot: crate::cat_layout::DockSnapshot::bottom(
+        dock_snapshot: crate::cat_layout::DockSnapshot::bottom_with_walk_bounds(
             anchor_screen.id.clone(),
             dock_frame,
+            walk_bounds.clone(),
             autohide,
         ),
         walk_bounds,
@@ -2502,6 +2591,32 @@ fn legacy_visible_bottom(screens: &[MacScreenSnapshot], screen: &MacScreenSnapsh
 /// - 本函数内部不返回错误；若 AX 不可用，会自动退化到估算路径。
 #[cfg(target_os = "macos")]
 fn get_dock_sample(screens: &[MacScreenSnapshot], anchor_screen: &MacScreenSnapshot) -> DockPlacementSample {
+    get_dock_sample_with_preferred_anchor(screens, anchor_screen, None)
+}
+
+/// macOS: 获取 Dock 采样统一输出（Bottom/Floor），并允许注入“优先锚点屏幕”以稳定 side Dock 隐藏态回退。
+///
+/// 语义与边界：
+/// - 与 `get_dock_sample` 相同，但允许调用方传入 `preferred_anchor_screen_id`：
+///   - 仅在 side Dock 且无法通过 `visible_frame` 内缩推断屏幕时，才作为 fallback 生效；
+///   - 典型用于“side Dock + autohide + Dock 在副屏”场景，避免隐藏态误回退到主屏。
+///
+/// 入参：
+/// - `screens`：当前采样到的全部屏幕快照（全局坐标）。
+/// - `anchor_screen`：默认锚定屏幕（通常是主屏）。
+/// - `preferred_anchor_screen_id`：上一轮已确认锚点屏幕 ID，可为空。
+///
+/// 返回：
+/// - `DockPlacementSample`：可直接用于运行时布局的统一结果。
+///
+/// 错误处理与失败场景：
+/// - 本函数内部不返回错误；若 AX 不可用，会自动退化到估算路径。
+#[cfg(target_os = "macos")]
+fn get_dock_sample_with_preferred_anchor(
+    screens: &[MacScreenSnapshot],
+    anchor_screen: &MacScreenSnapshot,
+    preferred_anchor_screen_id: Option<&str>,
+) -> DockPlacementSample {
     let autohide = dock_autohide_enabled();
 
     // Dock 不在底部时，窗口铺满锚定屏幕宽度（保持现有 floor 行为）
@@ -2511,8 +2626,12 @@ fn get_dock_sample(screens: &[MacScreenSnapshot], anchor_screen: &MacScreenSnaps
     {
         let orientation = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if orientation == "left" || orientation == "right" {
-            let dock_screen =
-                select_side_dock_anchor_screen(screens, anchor_screen, &orientation);
+            let dock_screen = select_side_dock_anchor_screen_with_preference(
+                screens,
+                anchor_screen,
+                preferred_anchor_screen_id,
+                &orientation,
+            );
             return build_floor_mode_sample(dock_screen, autohide);
         }
     }
@@ -3044,10 +3163,8 @@ pub fn run_cat() {
         if let Some(screens) = get_macos_screen_info() {
             if let Some(fallback_screen) = main_screen_snapshot(&screens) {
                 let dock_sample = get_dock_sample(&screens, fallback_screen);
-                let dock_screen =
-                    resolve_dock_anchor_screen(&screens, fallback_screen, &dock_sample);
-                let vis_bottom = legacy_visible_bottom(&screens, dock_screen);
-                AppliedLayout::from_dock_sample(&dock_sample, vis_bottom)
+                compute_applied_layout_for_dock_sample(&screens, fallback_screen, &dock_sample)
+                    .unwrap_or_else(|| AppliedLayout::fallback(200.0, 1200.0, 800.0))
             } else {
                 AppliedLayout::fallback(200.0, 1200.0, 800.0)
             }
@@ -3094,14 +3211,55 @@ pub fn run_cat() {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use std::time::Duration;
+    use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use crate::tray;
 
     use super::{
         build_floor_mode_sample, build_screen_id, dock_refresh_interval_for_tick, layout_changed,
         legacy_visible_bottom, main_screen_snapshot, refresh_interval, resolve_dock_anchor_screen,
         resolve_next_applied_layout, should_run_fast_autohide_probe,
-        select_side_dock_anchor_screen, AppliedLayout, MacScreenSnapshot,
+        select_side_dock_anchor_screen, select_side_dock_anchor_screen_with_preference,
+        AppliedLayout, MacScreenSnapshot,
     };
+
+    /// 构造一个仅用于布局钳位测试的哑猫实体。
+    ///
+    /// 语义与边界：
+    /// - 仅填充 `apply_dock_result` 所需字段（`x_offset/max_width`），其余字段使用安全的占位值。
+    /// - 不用于渲染与动画推进；任何依赖 `animations` 的逻辑都不应在此测试中调用。
+    fn dummy_cat(id: &str, max_width: f32, x_offset: f32) -> super::CatEntity {
+        let now = Instant::now();
+        super::CatEntity {
+            id: id.to_string(),
+            is_mini: false,
+            scale: 1.0,
+            animations: Vec::new(),
+            state: super::AnimationState {
+                current_anim: 0,
+                current_frame: 0,
+                last_frame_time: now,
+                loop_count: 0,
+                max_loops: 0,
+            },
+            x_offset,
+            move_direction: 1.0,
+            last_move_time: now,
+            claude_state: super::ClaudeState::Idle,
+            transition_anim: None,
+            pending_state: None,
+            pending_permission_count: 0,
+            notification_text: None,
+            notification_expire: now,
+            max_width,
+            max_height: 0.0,
+            min_bottom_offset: 0.0,
+            returning: false,
+            spawn_time: now,
+        }
+    }
 
     fn make_screen(
         name: &str,
@@ -3306,6 +3464,36 @@ mod tests {
     }
 
     #[test]
+    fn side_dock_autohide_hidden_should_keep_preferred_anchor_screen_when_no_inset() {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1728.0, 1117.0),
+            crate::cat_layout::Rect::new(0.0, 0.0, 1728.0, 1117.0),
+            2.0,
+            true,
+        );
+        let secondary = make_screen(
+            "External Side Dock",
+            crate::cat_layout::Rect::new(1728.0, 0.0, 1920.0, 1080.0),
+            crate::cat_layout::Rect::new(1728.0, 0.0, 1920.0, 1080.0),
+            1.0,
+            false,
+        );
+        let screens = vec![main.clone(), secondary.clone()];
+
+        let dock_screen = select_side_dock_anchor_screen_with_preference(
+            &screens,
+            &main,
+            Some(&secondary.id),
+            "left",
+        );
+        assert_eq!(
+            dock_screen.id, secondary.id,
+            "Dock 隐藏态无法通过 visible_frame 内缩推断时，应优先保留上次确认的副屏锚点"
+        );
+    }
+
+    #[test]
     fn autohide_layout_uses_fast_refresh_interval() {
         assert_eq!(refresh_interval(true), Duration::from_millis(250));
         assert_eq!(refresh_interval(false), Duration::from_secs(5));
@@ -3338,5 +3526,82 @@ mod tests {
 
         assert!(!should_run_fast_autohide_probe(Some(&autohide_layout)));
         assert!(should_run_fast_autohide_probe(None));
+    }
+
+    #[test]
+    fn apply_dock_result_should_clamp_cx_main_cat_x_offset() {
+        let now = Instant::now();
+
+        let initial_layout = make_layout(
+            "main",
+            0.0,
+            1092.0,
+            300.0,
+            crate::cat_layout::DockPlacementMode::Bottom,
+        );
+        let next_layout = make_layout(
+            "main",
+            0.0,
+            1092.0,
+            10.0,
+            crate::cat_layout::DockPlacementMode::Bottom,
+        );
+
+        let dock_result = Arc::new(Mutex::new(None));
+        let dock_refreshing = Arc::new(Mutex::new(false));
+        let dock_autohide_probe_result = Arc::new(Mutex::new(None));
+        let dock_autohide_probe_refreshing = Arc::new(Mutex::new(false));
+
+        let mut app = super::UnifiedCatApp {
+            sprite_sheet: image::RgbaImage::new(1, 1),
+            cx_sprite_sheet: image::RgbaImage::new(1, 1),
+            main_cat: dummy_cat("main", 50.0, 100.0),
+            cx_main_cat: dummy_cat("cx-main", 50.0, 100.0),
+            mini_cats: vec![dummy_cat("mini", 30.0, 80.0)],
+            position_phase: 10,
+            applied_layout: Some(initial_layout),
+            window_width: 300.0,
+            window_height: 0.0,
+            dock_left: 0.0,
+            dock_right: 300.0,
+            base_y: 1092.0,
+            last_poll_time: now,
+            last_dock_refresh: now,
+            dock_autohide_probe: None,
+            last_dock_autohide_probe: now,
+            dock_autohide_probe_result,
+            dock_autohide_probe_refreshing,
+            last_event_time: None,
+            known_subagents: HashSet::new(),
+            debug_subagents_active: false,
+            dock_result: Arc::clone(&dock_result),
+            dock_refreshing,
+            app_start: now,
+            drag_offset: eframe::egui::Vec2::ZERO,
+            is_dragging: false,
+            snap_back_start: None,
+            last_cat_rect: eframe::egui::Rect::NOTHING,
+            cx_drag_offset: eframe::egui::Vec2::ZERO,
+            cx_is_dragging: false,
+            cx_snap_back_start: None,
+            cx_last_cat_rect: eframe::egui::Rect::NOTHING,
+            tray_anim_state: tray::TrayAnimState::new(),
+            tray_last_frame_time: now,
+            tray_status_item: None,
+            tray_nsimages: Vec::new(),
+        };
+
+        {
+            let mut lock = dock_result.lock().unwrap();
+            *lock = Some(super::DockBoundsResult {
+                layout: next_layout,
+            });
+        }
+
+        assert!(app.apply_dock_result(), "dock layout should be applied");
+        assert_eq!(
+            app.cx_main_cat.x_offset, 0.0,
+            "cx_main_cat should be clamped together with main_cat"
+        );
     }
 }
