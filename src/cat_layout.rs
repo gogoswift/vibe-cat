@@ -42,6 +42,9 @@ impl Rect {
     ///
     /// 错误处理：
     /// - 不返回错误；非法几何由上层在布局阶段处理。
+    ///
+    /// 关键副作用：
+    /// - 无。
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             x,
@@ -83,6 +86,9 @@ impl ScreenSnapshot {
     ///
     /// 错误处理：
     /// - 不返回错误；冲突或缺失由 `compute_cat_window_layout` 处理。
+    ///
+    /// 关键副作用：
+    /// - 无。
     pub fn new(id: impl Into<String>, frame: Rect, visible_frame: Rect, scale_factor: f32) -> Self {
         Self {
             id: id.into(),
@@ -131,6 +137,12 @@ impl DockSnapshot {
     ///
     /// 返回：
     /// - `mode=Bottom` 的 `DockSnapshot`。
+    ///
+    /// 错误处理：
+    /// - 不返回错误；调用方需保证 `dock_frame` 与 `anchor_screen_id` 对应同一屏幕。
+    ///
+    /// 关键副作用：
+    /// - 无。
     pub fn bottom(anchor_screen_id: impl Into<String>, dock_frame: Rect, autohide: bool) -> Self {
         Self {
             anchor_screen_id: anchor_screen_id.into(),
@@ -149,6 +161,12 @@ impl DockSnapshot {
     ///
     /// 返回：
     /// - `DockSnapshot`；调用方需保证传入模式符合约定。
+    ///
+    /// 错误处理：
+    /// - 不返回错误；若传入非 `Floor` 模式，后续布局结果是否合理由调用方负责。
+    ///
+    /// 关键副作用：
+    /// - 无。
     pub fn side(anchor_screen_id: impl Into<String>, mode: DockPlacementMode, autohide: bool) -> Self {
         Self {
             anchor_screen_id: anchor_screen_id.into(),
