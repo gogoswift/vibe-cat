@@ -1896,6 +1896,72 @@ fn build_floor_mode_sample(anchor_screen: &MacScreenSnapshot, autohide: bool) ->
     }
 }
 
+/// 依据 side Dock 朝向选择 Floor 模式的锚点屏幕。
+///
+/// 语义与边界：
+/// - `orientation` 仅支持 `"left"` 和 `"right"`，其它值直接回退 `fallback_screen`。
+/// - 通过 `visible_frame` 相对 `frame` 的水平内缩推断 Dock 所在屏：
+///   - `left`：优先选择 `visible_frame.x > frame.x` 的屏幕。
+///   - `right`：优先选择 `visible_frame.right < frame.right` 的屏幕。
+/// - 同向命中多块屏时，优先选择内缩量最大的屏幕。
+///
+/// 入参：
+/// - `screens`：同一轮采样得到的全量屏幕快照。
+/// - `fallback_screen`：兜底屏幕（通常是主屏）。
+/// - `orientation`：Dock 朝向字符串。
+///
+/// 返回：
+/// - Floor 模式使用的锚点屏幕快照。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；无法识别朝向时回退兜底屏幕。
+#[cfg(target_os = "macos")]
+fn select_side_dock_anchor_screen<'a>(
+    screens: &'a [MacScreenSnapshot],
+    fallback_screen: &'a MacScreenSnapshot,
+    orientation: &str,
+) -> &'a MacScreenSnapshot {
+    use std::cmp::Ordering;
+
+    const SIDE_DOCK_INSET_EPSILON: f32 = 0.5;
+
+    let select_max_inset =
+        |extract_inset: fn(&MacScreenSnapshot) -> f32| -> Option<&MacScreenSnapshot> {
+            screens
+                .iter()
+                .filter_map(|screen| {
+                    let inset = extract_inset(screen);
+                    if inset > SIDE_DOCK_INSET_EPSILON {
+                        Some((screen, inset))
+                    } else {
+                        None
+                    }
+                })
+                .max_by(|lhs, rhs| {
+                    lhs.1
+                        .partial_cmp(&rhs.1)
+                        .unwrap_or(Ordering::Equal)
+                        .then_with(|| lhs.0.id.cmp(&rhs.0.id))
+                })
+                .map(|(screen, _)| screen)
+        };
+
+    let left_inset = |screen: &MacScreenSnapshot| -> f32 {
+        (screen.visible_frame.x - screen.frame.x).max(0.0)
+    };
+    let right_inset = |screen: &MacScreenSnapshot| -> f32 {
+        let frame_right = screen.frame.x + screen.frame.width;
+        let visible_right = screen.visible_frame.x + screen.visible_frame.width;
+        (frame_right - visible_right).max(0.0)
+    };
+
+    match orientation {
+        "left" => select_max_inset(left_inset).unwrap_or(fallback_screen),
+        "right" => select_max_inset(right_inset).unwrap_or(fallback_screen),
+        _ => fallback_screen,
+    }
+}
+
 /// 基于锚点屏幕与水平边界估算 Bottom 模式 Dock 矩形。
 ///
 /// 语义与边界：
@@ -2060,7 +2126,9 @@ fn get_dock_sample(screens: &[MacScreenSnapshot], anchor_screen: &MacScreenSnaps
     {
         let orientation = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if orientation == "left" || orientation == "right" {
-            return build_floor_mode_sample(anchor_screen, autohide);
+            let dock_screen =
+                select_side_dock_anchor_screen(screens, anchor_screen, &orientation);
+            return build_floor_mode_sample(dock_screen, autohide);
         }
     }
 
@@ -2631,7 +2699,7 @@ pub fn run_cat() {
 mod tests {
     use super::{
         build_floor_mode_sample, build_screen_id, legacy_visible_bottom, main_screen_snapshot,
-        resolve_dock_anchor_screen,
+        resolve_dock_anchor_screen, select_side_dock_anchor_screen,
         MacScreenSnapshot,
     };
 
@@ -2733,5 +2801,49 @@ mod tests {
             sample.walk_bounds.width,
             screen.visible_frame.width
         );
+    }
+
+    #[test]
+    fn side_dock_left_orientation_should_anchor_to_screen_with_left_inset() {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1728.0, 1117.0),
+            crate::cat_layout::Rect::new(0.0, 25.0, 1728.0, 1070.0),
+            2.0,
+            true,
+        );
+        let secondary = make_screen(
+            "External Left Dock",
+            crate::cat_layout::Rect::new(1728.0, 0.0, 1920.0, 1080.0),
+            crate::cat_layout::Rect::new(1808.0, 25.0, 1840.0, 1035.0),
+            1.0,
+            false,
+        );
+        let screens = vec![main.clone(), secondary.clone()];
+
+        let dock_screen = select_side_dock_anchor_screen(&screens, &main, "left");
+        assert_eq!(dock_screen.id, secondary.id);
+    }
+
+    #[test]
+    fn side_dock_right_orientation_should_anchor_to_screen_with_right_inset() {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1728.0, 1117.0),
+            crate::cat_layout::Rect::new(0.0, 25.0, 1728.0, 1070.0),
+            2.0,
+            true,
+        );
+        let secondary = make_screen(
+            "External Right Dock",
+            crate::cat_layout::Rect::new(1728.0, 0.0, 1920.0, 1080.0),
+            crate::cat_layout::Rect::new(1728.0, 25.0, 1842.0, 1035.0),
+            1.0,
+            false,
+        );
+        let screens = vec![main.clone(), secondary.clone()];
+
+        let dock_screen = select_side_dock_anchor_screen(&screens, &main, "right");
+        assert_eq!(dock_screen.id, secondary.id);
     }
 }
