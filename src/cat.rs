@@ -1708,10 +1708,10 @@ fn get_dock_bounds_ax(screen_w: f32) -> Option<(f32, f32)> {
     use std::ffi::c_void;
     use std::process::Command;
     use std::ptr;
-    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    // 权限缓存: 0=未检查, 1=有权限, 2=无权限
-    static AX_PERMISSION: AtomicU8 = AtomicU8::new(0);
+    // 记录是否已经弹过权限申请，避免重复弹窗
+    static AX_PROMPTED: AtomicBool = AtomicBool::new(false);
 
     // Accessibility API FFI 声明
     type AXUIElementRef = *mut c_void;
@@ -1735,52 +1735,6 @@ fn get_dock_bounds_ax(screen_w: f32) -> Option<(f32, f32)> {
         fn CFRelease(cf: *const c_void);
         fn CFArrayGetCount(array: CFTypeRef) -> isize;
         fn CFArrayGetValueAtIndex(array: CFTypeRef, idx: isize) -> CFTypeRef;
-    }
-
-    // 权限检查策略:
-    //   perm==0 (未检查): 看磁盘标记 → 没弹过则弹一次并写标记, 弹过则静默检查
-    //   perm==1 (有权限): 直接走 AX 路径
-    //   perm==2 (无权限): 直接跳过
-    let perm = AX_PERMISSION.load(Ordering::Relaxed);
-    if perm == 2 {
-        return None;
-    }
-
-    // 标记文件: 记录是否已经弹过授权对话框 (永久只弹一次)
-    let marker_path = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("claude-hook-monitor")
-        .join(".ax_prompted");
-
-    let is_trusted = unsafe {
-        use objc2_foundation::{NSDictionary, NSNumber, NSString};
-        let key = NSString::from_str("AXTrustedCheckOptionPrompt");
-
-        // 只有从未弹过对话框时才 prompt=true
-        let already_prompted = marker_path.exists();
-        let prompt = perm == 0 && !already_prompted;
-
-        let val = NSNumber::new_bool(prompt);
-        let dict = NSDictionary::from_id_slice(&[&*key], &[val]);
-        let dict_ptr = &*dict as *const _ as CFDictionaryRef;
-        let trusted = AXIsProcessTrustedWithOptions(dict_ptr);
-
-        // 弹过一次后写入标记文件
-        if prompt {
-            if let Some(parent) = marker_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(&marker_path, "1");
-        }
-
-        trusted
-    };
-
-    if is_trusted {
-        AX_PERMISSION.store(1, Ordering::Relaxed);
-    } else {
-        AX_PERMISSION.store(2, Ordering::Relaxed);
-        return None;
     }
 
     // 获取 Dock 进程 PID (通过 pgrep, 快速且可靠)
@@ -1812,8 +1766,20 @@ fn get_dock_bounds_ax(screen_w: f32) -> Option<(f32, f32)> {
 
         // 获取 Dock 的子元素
         let mut children: CFTypeRef = ptr::null_mut();
-        if AXUIElementCopyAttributeValue(dock_el, children_attr, &mut children) != SUCCESS {
+        let ax_err = AXUIElementCopyAttributeValue(dock_el, children_attr, &mut children);
+        if ax_err != SUCCESS {
             CFRelease(dock_el);
+            // 只在权限相关错误时弹窗：-25211 (APIDisabled) 或 -25205 (CannotComplete)
+            if (ax_err == -25211 || ax_err == -25205)
+                && !AX_PROMPTED.swap(true, Ordering::Relaxed)
+            {
+                use objc2_foundation::{NSDictionary, NSNumber, NSString as NSStr};
+                let key = NSStr::from_str("AXTrustedCheckOptionPrompt");
+                let val = NSNumber::new_bool(true);
+                let dict = NSDictionary::from_id_slice(&[&*key], &[val]);
+                let dict_ptr = &*dict as *const _ as CFDictionaryRef;
+                AXIsProcessTrustedWithOptions(dict_ptr);
+            }
             return None;
         }
 
