@@ -51,16 +51,76 @@ struct AnimationDef {
 }
 
 const ANIMATIONS: &[AnimationDef] = &[
-    AnimationDef { name: "sit_1",   row: 0, frame_count: 4, frame_duration: Duration::from_millis(300), move_speed: 0.0 },
-    AnimationDef { name: "sit_2",   row: 1, frame_count: 4, frame_duration: Duration::from_millis(300), move_speed: 0.0 },
-    AnimationDef { name: "sit_3",   row: 2, frame_count: 4, frame_duration: Duration::from_millis(300), move_speed: 0.0 },
-    AnimationDef { name: "sit_4",   row: 3, frame_count: 4, frame_duration: Duration::from_millis(300), move_speed: 0.0 },
-    AnimationDef { name: "walk",    row: 4, frame_count: 8, frame_duration: Duration::from_millis(100), move_speed: 60.0 },
-    AnimationDef { name: "run",     row: 5, frame_count: 8, frame_duration: Duration::from_millis(100), move_speed: 180.0 },
-    AnimationDef { name: "sleep",   row: 6, frame_count: 4, frame_duration: Duration::from_millis(500), move_speed: 0.0 },
-    AnimationDef { name: "play",    row: 7, frame_count: 6, frame_duration: Duration::from_millis(200), move_speed: 0.0 },
-    AnimationDef { name: "pounce",  row: 8, frame_count: 7, frame_duration: Duration::from_millis(150), move_speed: 40.0 },
-    AnimationDef { name: "stretch", row: 9, frame_count: 8, frame_duration: Duration::from_millis(200), move_speed: 0.0 },
+    AnimationDef {
+        name: "sit_1",
+        row: 0,
+        frame_count: 4,
+        frame_duration: Duration::from_millis(300),
+        move_speed: 0.0,
+    },
+    AnimationDef {
+        name: "sit_2",
+        row: 1,
+        frame_count: 4,
+        frame_duration: Duration::from_millis(300),
+        move_speed: 0.0,
+    },
+    AnimationDef {
+        name: "sit_3",
+        row: 2,
+        frame_count: 4,
+        frame_duration: Duration::from_millis(300),
+        move_speed: 0.0,
+    },
+    AnimationDef {
+        name: "sit_4",
+        row: 3,
+        frame_count: 4,
+        frame_duration: Duration::from_millis(300),
+        move_speed: 0.0,
+    },
+    AnimationDef {
+        name: "walk",
+        row: 4,
+        frame_count: 8,
+        frame_duration: Duration::from_millis(100),
+        move_speed: 60.0,
+    },
+    AnimationDef {
+        name: "run",
+        row: 5,
+        frame_count: 8,
+        frame_duration: Duration::from_millis(100),
+        move_speed: 180.0,
+    },
+    AnimationDef {
+        name: "sleep",
+        row: 6,
+        frame_count: 4,
+        frame_duration: Duration::from_millis(500),
+        move_speed: 0.0,
+    },
+    AnimationDef {
+        name: "play",
+        row: 7,
+        frame_count: 6,
+        frame_duration: Duration::from_millis(200),
+        move_speed: 0.0,
+    },
+    AnimationDef {
+        name: "pounce",
+        row: 8,
+        frame_count: 7,
+        frame_duration: Duration::from_millis(150),
+        move_speed: 40.0,
+    },
+    AnimationDef {
+        name: "stretch",
+        row: 9,
+        frame_count: 8,
+        frame_duration: Duration::from_millis(200),
+        move_speed: 0.0,
+    },
 ];
 
 // 动画索引常量
@@ -82,24 +142,20 @@ pub(crate) enum ClaudeState {
 /// 状态对应的动画池
 fn state_animations(state: ClaudeState) -> &'static [usize] {
     match state {
-        ClaudeState::Active => &[4, 5],           // walk, run
-        ClaudeState::Idle => &[0, 1, 2, 3, 7],    // sit_1-4, play
-        ClaudeState::Offline => &[ANIM_SLEEP],     // sleep
+        ClaudeState::Active => &[4, 5],        // walk, run
+        ClaudeState::Idle => &[0, 1, 2, 3, 7], // sit_1-4, play
+        ClaudeState::Offline => &[ANIM_SLEEP], // sleep
     }
 }
 
 /// 事件类型 -> Claude 状态
 fn event_type_to_state(event_type: &str) -> ClaudeState {
     match event_type {
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse"
-        | "PostToolUseFailure" | "SubagentStart" | "SubagentStop" | "PreCompact"
-        | "WorktreeCreate" | "WorktreeRemove"
-        | "api_request" | "tool_decision" | "tool_result" | "sse_event" => {
-            ClaudeState::Active
-        }
-        "SessionStart" | "Stop" | "PermissionRequest" | "TaskCompleted" | "TeammateIdle" | "Notification" => {
-            ClaudeState::Idle
-        }
+        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+        | "SubagentStart" | "SubagentStop" | "PreCompact" | "WorktreeCreate" | "WorktreeRemove"
+        | "api_request" | "tool_decision" | "tool_result" | "sse_event" => ClaudeState::Active,
+        "SessionStart" | "Stop" | "PermissionRequest" | "TaskCompleted" | "TeammateIdle"
+        | "Notification" => ClaudeState::Idle,
         "SessionEnd" => ClaudeState::Offline,
         _ => ClaudeState::Idle,
     }
@@ -172,7 +228,8 @@ impl CatEntity {
             let mut frames = Vec::new();
             for col in 0..anim_def.frame_count {
                 let name = format!("cat_{}_{}", anim_def.name, col);
-                let (frame, w, h) = extract_cropped_frame(sheet, anim_def.row, col, ctx, &name, SCALE);
+                let (frame, w, h) =
+                    extract_cropped_frame(sheet, anim_def.row, col, ctx, &name, SCALE);
                 max_w = max_w.max(w);
                 max_h = max_h.max(h + frame.bottom_offset);
                 min_bottom_offset = min_bottom_offset.min(frame.bottom_offset);
@@ -184,7 +241,11 @@ impl CatEntity {
                 move_speed: anim_def.move_speed,
             });
         }
-        let min_bottom_offset = if min_bottom_offset == f32::MAX { 0.0 } else { min_bottom_offset };
+        let min_bottom_offset = if min_bottom_offset == f32::MAX {
+            0.0
+        } else {
+            min_bottom_offset
+        };
 
         let now = Instant::now();
         CatEntity {
@@ -217,10 +278,15 @@ impl CatEntity {
     }
 
     /// 创建迷你猫：只加载 walk(4) 和 run(5)，MINI_SCALE=1.5
-    fn new_mini(ctx: &egui::Context, sheet: &image::RgbaImage, agent_id: &str, start_x: f32) -> Self {
+    fn new_mini(
+        ctx: &egui::Context,
+        sheet: &image::RgbaImage,
+        agent_id: &str,
+        start_x: f32,
+    ) -> Self {
         let mini_anims: &[(usize, f32)] = &[
-            (4, 60.0),   // walk
-            (5, 180.0),  // run
+            (4, 60.0),  // walk
+            (5, 180.0), // run
         ];
 
         let mut animations = Vec::new();
@@ -246,7 +312,11 @@ impl CatEntity {
                 move_speed,
             });
         }
-        let min_bottom_offset = if min_bottom_offset == f32::MAX { 0.0 } else { min_bottom_offset };
+        let min_bottom_offset = if min_bottom_offset == f32::MAX {
+            0.0
+        } else {
+            min_bottom_offset
+        };
 
         let now = Instant::now();
         let mut rng = rand::thread_rng();
@@ -371,7 +441,9 @@ fn extract_cropped_frame(
     for ly in min_y..=max_y {
         for lx in min_x..=max_x {
             let px = sheet.get_pixel(cell_x + lx, cell_y + ly);
-            pixels.push(egui::Color32::from_rgba_unmultiplied(px[0], px[1], px[2], px[3]));
+            pixels.push(egui::Color32::from_rgba_unmultiplied(
+                px[0], px[1], px[2], px[3],
+            ));
         }
     }
 
@@ -466,7 +538,8 @@ impl AppliedLayout {
 /// 使用纯布局计算结果构建运行时 `AppliedLayout`。
 ///
 /// 语义与边界：
-/// - 运行时窗口 Y 坐标仍沿用历史 “`top - visible_frame.y`” 基线语义（见 `legacy_visible_bottom`）。
+/// - 运行时窗口 Y 坐标会转换到 winit/macOS 使用的“相对主屏顶部”的坐标系（见
+///   `legacy_visible_bottom`），避免上下堆叠多屏时把窗口算到错误屏幕。
 /// - 水平方向（窗口宽度/活动范围）完全复用 `cat_layout::compute_cat_window_layout` 的输出，
 ///   避免测试与运行时逻辑分叉。
 /// - `dock_autohide` 仅做透传，不参与本函数内的几何推断。
@@ -514,8 +587,7 @@ fn compute_applied_layout_for_dock_sample(
     let walk_bounds = layout.walk_bounds;
     let window_width = walk_bounds.width;
 
-    let anchor_screen =
-        screen_by_id(screens, &layout.anchor_screen_id).unwrap_or(fallback_screen);
+    let anchor_screen = screen_by_id(screens, &layout.anchor_screen_id).unwrap_or(fallback_screen);
     let base_y = legacy_visible_bottom(screens, anchor_screen);
 
     Some(AppliedLayout {
@@ -603,7 +675,10 @@ fn dock_refresh_interval_for_tick(
     applied_layout: Option<&AppliedLayout>,
     live_probe_autohide: Option<bool>,
 ) -> Duration {
-    refresh_interval(resolve_refresh_autohide(applied_layout, live_probe_autohide))
+    refresh_interval(resolve_refresh_autohide(
+        applied_layout,
+        live_probe_autohide,
+    ))
 }
 
 /// 判断是否需要启动高频自动隐藏探测。
@@ -944,8 +1019,12 @@ impl UnifiedCatApp {
         // 检测 subagent 生命周期事件
         for entry in &entries {
             // 跳过已关闭来源的事件
-            if entry.source == "cx" && !cx_on { continue; }
-            if entry.source != "cx" && !cc_on { continue; }
+            if entry.source == "cx" && !cx_on {
+                continue;
+            }
+            if entry.source != "cx" && !cc_on {
+                continue;
+            }
             let is_new = match &self.last_event_time {
                 Some(t) => entry.timestamp > *t,
                 None => false,
@@ -955,7 +1034,9 @@ impl UnifiedCatApp {
             }
 
             if entry.event_type == "SubagentStart" {
-                if let Some(aid) = entry.raw.get("agent_id")
+                if let Some(aid) = entry
+                    .raw
+                    .get("agent_id")
                     .or_else(|| entry.raw.get("call_id"))
                     .and_then(|v| v.as_str())
                 {
@@ -970,7 +1051,9 @@ impl UnifiedCatApp {
                     }
                 }
             } else if entry.event_type == "SubagentStop" {
-                if let Some(aid) = entry.raw.get("agent_id")
+                if let Some(aid) = entry
+                    .raw
+                    .get("agent_id")
                     .or_else(|| entry.raw.get("call_id"))
                     .and_then(|v| v.as_str())
                 {
@@ -993,16 +1076,30 @@ impl UnifiedCatApp {
         let mut had_active_in_new_events = false;
         let mut had_active_in_new_cx_events = false;
         for entry in &entries {
-            if entry.source == "cx" && !cx_on { continue; }
-            if entry.source != "cx" && !cc_on { continue; }
+            if entry.source == "cx" && !cx_on {
+                continue;
+            }
+            if entry.source != "cx" && !cc_on {
+                continue;
+            }
             let is_new = match &self.last_event_time {
                 Some(t) => entry.timestamp > *t,
                 None => true,
             };
-            if !is_new { continue; }
-            let is_subagent = entry.raw.get("agent_type").and_then(|v| v.as_str()).is_some();
-            if is_subagent { continue; }
-            if entry.event_type == "ConfigChange" || entry.event_type == "InstructionsLoaded" { continue; }
+            if !is_new {
+                continue;
+            }
+            let is_subagent = entry
+                .raw
+                .get("agent_type")
+                .and_then(|v| v.as_str())
+                .is_some();
+            if is_subagent {
+                continue;
+            }
+            if entry.event_type == "ConfigChange" || entry.event_type == "InstructionsLoaded" {
+                continue;
+            }
             if event_type_to_state(&entry.event_type) == ClaudeState::Active {
                 if entry.source == "cx" {
                     had_active_in_new_cx_events = true;
@@ -1015,7 +1112,10 @@ impl UnifiedCatApp {
         // 找最后一条 cc 主代理事件来决定主猫状态（排除 cx 事件）
         let last_non_subagent = if cc_on {
             entries.iter().rev().find(|e| {
-                e.source != "cx" && e.event_type != "ConfigChange" && e.event_type != "InstructionsLoaded" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
+                e.source != "cx"
+                    && e.event_type != "ConfigChange"
+                    && e.event_type != "InstructionsLoaded"
+                    && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
             })
         } else {
             None
@@ -1030,8 +1130,7 @@ impl UnifiedCatApp {
                     if entry.event_type == "Notification" {
                         if let Some(raw) = entry.raw.get("notification_type") {
                             if raw.as_str() == Some("elicitation_dialog") {
-                                self.main_cat.notification_text =
-                                    Some("等你回答".to_string());
+                                self.main_cat.notification_text = Some("等你回答".to_string());
                                 self.main_cat.notification_expire =
                                     Instant::now() + Duration::from_secs(8);
                             }
@@ -1051,21 +1150,29 @@ impl UnifiedCatApp {
             let mut cc_last: HashMap<(String, String), &str> = HashMap::new();
             let mut cx_last: HashMap<(String, String), &str> = HashMap::new();
             for entry in &entries {
-                let agent_id = entry.raw.get("agent_id")
+                let agent_id = entry
+                    .raw
+                    .get("agent_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
                 let key = (entry.session_id.clone(), agent_id);
                 if entry.source == "cx" {
-                    if cx_on { cx_last.insert(key, &entry.event_type); }
+                    if cx_on {
+                        cx_last.insert(key, &entry.event_type);
+                    }
                 } else {
-                    if cc_on { cc_last.insert(key, &entry.event_type); }
+                    if cc_on {
+                        cc_last.insert(key, &entry.event_type);
+                    }
                 }
             }
-            self.main_cat.pending_permission_count = cc_last.values()
+            self.main_cat.pending_permission_count = cc_last
+                .values()
                 .filter(|&&et| et == "PermissionRequest")
                 .count();
-            self.cx_main_cat.pending_permission_count = cx_last.values()
+            self.cx_main_cat.pending_permission_count = cx_last
+                .values()
                 .filter(|&&et| et == "PermissionRequest")
                 .count();
         }
@@ -1073,7 +1180,10 @@ impl UnifiedCatApp {
         // ---- cx 主猫状态 ----
         let last_cx_event = if cx_on {
             entries.iter().rev().find(|e| {
-                e.source == "cx" && e.event_type != "ConfigChange" && e.event_type != "InstructionsLoaded" && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
+                e.source == "cx"
+                    && e.event_type != "ConfigChange"
+                    && e.event_type != "InstructionsLoaded"
+                    && e.raw.get("agent_type").and_then(|v| v.as_str()).is_none()
             })
         } else {
             None
@@ -1088,8 +1198,7 @@ impl UnifiedCatApp {
                     if entry.event_type == "Notification" {
                         if let Some(raw) = entry.raw.get("notification_type") {
                             if raw.as_str() == Some("elicitation_dialog") {
-                                self.cx_main_cat.notification_text =
-                                    Some("等你回答".to_string());
+                                self.cx_main_cat.notification_text = Some("等你回答".to_string());
                                 self.cx_main_cat.notification_expire =
                                     Instant::now() + Duration::from_secs(8);
                             }
@@ -1320,18 +1429,30 @@ impl UnifiedCatApp {
                 let ww = self.window_width;
                 {
                     let max_x = (ww - self.main_cat.max_width).max(0.0);
-                    if self.main_cat.x_offset < 0.0 { self.main_cat.x_offset = 0.0; }
-                    if self.main_cat.x_offset > max_x { self.main_cat.x_offset = max_x; }
+                    if self.main_cat.x_offset < 0.0 {
+                        self.main_cat.x_offset = 0.0;
+                    }
+                    if self.main_cat.x_offset > max_x {
+                        self.main_cat.x_offset = max_x;
+                    }
                 }
                 {
                     let max_x = (ww - self.cx_main_cat.max_width).max(0.0);
-                    if self.cx_main_cat.x_offset < 0.0 { self.cx_main_cat.x_offset = 0.0; }
-                    if self.cx_main_cat.x_offset > max_x { self.cx_main_cat.x_offset = max_x; }
+                    if self.cx_main_cat.x_offset < 0.0 {
+                        self.cx_main_cat.x_offset = 0.0;
+                    }
+                    if self.cx_main_cat.x_offset > max_x {
+                        self.cx_main_cat.x_offset = max_x;
+                    }
                 }
                 for mc in &mut self.mini_cats {
                     let max_x = (ww - mc.max_width).max(0.0);
-                    if mc.x_offset < 0.0 { mc.x_offset = 0.0; }
-                    if mc.x_offset > max_x { mc.x_offset = max_x; }
+                    if mc.x_offset < 0.0 {
+                        mc.x_offset = 0.0;
+                    }
+                    if mc.x_offset > max_x {
+                        mc.x_offset = max_x;
+                    }
                 }
 
                 return true;
@@ -1444,9 +1565,10 @@ impl eframe::App for UnifiedCatApp {
             self.position_phase += 1;
             if self.position_phase == 1 {
                 // Phase 1: 设置窗口尺寸为 Dock 宽度
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                    egui::vec2(self.window_width, self.window_height),
-                ));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                    self.window_width,
+                    self.window_height,
+                )));
             } else if self.position_phase == 5 {
                 // Phase 5: 定位到 Dock 上方
                 #[cfg(target_os = "macos")]
@@ -1463,12 +1585,9 @@ impl eframe::App for UnifiedCatApp {
                     let x = self.dock_left;
                     let y = self.base_y - self.window_height - title_bar_h
                         + self.main_cat.min_bottom_offset;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
-                        egui::pos2(x, y),
-                    ));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
                     // 大猫居中
-                    self.main_cat.x_offset =
-                        (self.window_width - self.main_cat.max_width) / 2.0;
+                    self.main_cat.x_offset = (self.window_width - self.main_cat.max_width) / 2.0;
                     self.main_cat.last_move_time = now;
                 }
             } else if self.position_phase == 6 {
@@ -1514,10 +1633,8 @@ impl eframe::App for UnifiedCatApp {
         // ---- 后台 Dock 刷新（自动隐藏时加速，不阻塞 UI） ----
         self.apply_dock_autohide_probe_result();
         self.start_dock_autohide_probe_bg(now);
-        let dock_refresh_interval = dock_refresh_interval_for_tick(
-            self.applied_layout.as_ref(),
-            self.dock_autohide_probe,
-        );
+        let dock_refresh_interval =
+            dock_refresh_interval_for_tick(self.applied_layout.as_ref(), self.dock_autohide_probe);
         if now.duration_since(self.last_dock_refresh) > dock_refresh_interval {
             self.last_dock_refresh = now;
             self.start_dock_refresh_bg();
@@ -1526,9 +1643,10 @@ impl eframe::App for UnifiedCatApp {
         let bounds_changed = self.apply_dock_result();
         if bounds_changed {
             self.window_height = self.main_cat.max_height + 22.0;
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                egui::vec2(self.window_width, self.window_height),
-            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                self.window_width,
+                self.window_height,
+            )));
             #[cfg(target_os = "macos")]
             {
                 let title_bar_h = ctx.input(|i| {
@@ -1542,9 +1660,10 @@ impl eframe::App for UnifiedCatApp {
                 });
                 let y = self.base_y - self.window_height - title_bar_h
                     + self.main_cat.min_bottom_offset;
-                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
-                    egui::pos2(self.dock_left, y),
-                ));
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                    self.dock_left,
+                    y,
+                )));
             }
         }
 
@@ -1555,8 +1674,16 @@ impl eframe::App for UnifiedCatApp {
                 self.tray_last_frame_time = now;
                 // 合并 cc/cx 状态：任一活跃则活跃，全部 Offline 才睡觉
                 let combined_state = {
-                    let cc_st = if cc_on { self.main_cat.claude_state } else { ClaudeState::Offline };
-                    let cx_st = if cx_on { self.cx_main_cat.claude_state } else { ClaudeState::Offline };
+                    let cc_st = if cc_on {
+                        self.main_cat.claude_state
+                    } else {
+                        ClaudeState::Offline
+                    };
+                    let cx_st = if cx_on {
+                        self.cx_main_cat.claude_state
+                    } else {
+                        ClaudeState::Offline
+                    };
                     if cc_st == ClaudeState::Active || cx_st == ClaudeState::Active {
                         ClaudeState::Active
                     } else if cc_st == ClaudeState::Idle || cx_st == ClaudeState::Idle {
@@ -1601,13 +1728,15 @@ impl eframe::App for UnifiedCatApp {
                                 let old = cat.claude_state;
                                 cat.claude_state = target;
                                 if old == ClaudeState::Active
-                                    && (target == ClaudeState::Idle || target == ClaudeState::Offline)
+                                    && (target == ClaudeState::Idle
+                                        || target == ClaudeState::Offline)
                                 {
                                     cat.transition_anim = Some(ANIM_POUNCE);
                                     cat.pending_state = Some(target);
                                     cat.switch_to_animation(ANIM_POUNCE);
                                 } else if old == ClaudeState::Offline
-                                    && (target == ClaudeState::Idle || target == ClaudeState::Active)
+                                    && (target == ClaudeState::Idle
+                                        || target == ClaudeState::Active)
                                 {
                                     cat.transition_anim = Some(ANIM_STRETCH);
                                     cat.pending_state = Some(target);
@@ -1650,13 +1779,15 @@ impl eframe::App for UnifiedCatApp {
                                 let old = cat.claude_state;
                                 cat.claude_state = target;
                                 if old == ClaudeState::Active
-                                    && (target == ClaudeState::Idle || target == ClaudeState::Offline)
+                                    && (target == ClaudeState::Idle
+                                        || target == ClaudeState::Offline)
                                 {
                                     cat.transition_anim = Some(ANIM_POUNCE);
                                     cat.pending_state = Some(target);
                                     cat.switch_to_animation(ANIM_POUNCE);
                                 } else if old == ClaudeState::Offline
-                                    && (target == ClaudeState::Idle || target == ClaudeState::Active)
+                                    && (target == ClaudeState::Idle
+                                        || target == ClaudeState::Active)
                                 {
                                     cat.transition_anim = Some(ANIM_STRETCH);
                                     cat.pending_state = Some(target);
@@ -1778,7 +1909,11 @@ impl eframe::App for UnifiedCatApp {
 
                 if mc.returning {
                     // returning：朝对应主猫中心跑
-                    let target_center = if mc.id.starts_with("cx:") { cx_center_x } else { cc_center_x };
+                    let target_center = if mc.id.starts_with("cx:") {
+                        cx_center_x
+                    } else {
+                        cc_center_x
+                    };
                     let mc_center = mc.x_offset + mc.max_width / 2.0;
                     let diff = target_center - mc_center;
                     mc.move_direction = if diff > 0.0 { 1.0 } else { -1.0 };
@@ -1795,11 +1930,15 @@ impl eframe::App for UnifiedCatApp {
                 let max_x = (ww - mc.max_width).max(0.0);
                 if mc.x_offset < 0.0 {
                     mc.x_offset = 0.0;
-                    if !mc.returning { mc.move_direction = 1.0; }
+                    if !mc.returning {
+                        mc.move_direction = 1.0;
+                    }
                 }
                 if mc.x_offset > max_x {
                     mc.x_offset = max_x;
-                    if !mc.returning { mc.move_direction = -1.0; }
+                    if !mc.returning {
+                        mc.move_direction = -1.0;
+                    }
                 }
             } else {
                 mc.last_move_time = now;
@@ -1807,8 +1946,14 @@ impl eframe::App for UnifiedCatApp {
         }
         // 到达主猫身边的 returning 猫：删除
         self.mini_cats.retain(|mc| {
-            if !mc.returning { return true; }
-            let target_center = if mc.id.starts_with("cx:") { cx_center_x } else { cc_center_x };
+            if !mc.returning {
+                return true;
+            }
+            let target_center = if mc.id.starts_with("cx:") {
+                cx_center_x
+            } else {
+                cc_center_x
+            };
             let mc_center = mc.x_offset + mc.max_width / 2.0;
             (mc_center - target_center).abs() > 5.0
         });
@@ -1840,7 +1985,10 @@ impl eframe::App for UnifiedCatApp {
                 let duration = 0.25;
                 if elapsed >= duration {
                     self.cx_main_cat.x_offset = (self.cx_main_cat.x_offset + self.cx_drag_offset.x)
-                        .clamp(0.0, (self.window_width - self.cx_main_cat.max_width).max(0.0));
+                        .clamp(
+                            0.0,
+                            (self.window_width - self.cx_main_cat.max_width).max(0.0),
+                        );
                     self.cx_drag_offset = egui::Vec2::ZERO;
                     self.cx_snap_back_start = None;
                     self.cx_main_cat.state.last_frame_time = now;
@@ -1854,8 +2002,16 @@ impl eframe::App for UnifiedCatApp {
 
         // ---- 动态鼠标穿透（仅当鼠标在猫精灵上时关闭穿透） ----
         let either_dragging = (cc_on && self.is_dragging) || (cx_on && self.cx_is_dragging);
-        let cc_rect = if cc_on { self.last_cat_rect } else { egui::Rect::NOTHING };
-        let cx_rect = if cx_on { self.cx_last_cat_rect } else { egui::Rect::NOTHING };
+        let cc_rect = if cc_on {
+            self.last_cat_rect
+        } else {
+            egui::Rect::NOTHING
+        };
+        let cx_rect = if cx_on {
+            self.cx_last_cat_rect
+        } else {
+            egui::Rect::NOTHING
+        };
         let combined_rect = if cc_rect == egui::Rect::NOTHING {
             cx_rect
         } else if cx_rect == egui::Rect::NOTHING {
@@ -1866,8 +2022,7 @@ impl eframe::App for UnifiedCatApp {
         update_mouse_passthrough(combined_rect, either_dragging);
 
         // ---- 绘制 ----
-        let panel_frame = egui::Frame::NONE
-            .fill(egui::Color32::TRANSPARENT);
+        let panel_frame = egui::Frame::NONE.fill(egui::Color32::TRANSPARENT);
 
         egui::CentralPanel::default()
             .frame(panel_frame)
@@ -1876,16 +2031,18 @@ impl eframe::App for UnifiedCatApp {
 
                 // 先画迷你猫（在下层）
                 for mc in self.mini_cats.iter().filter(|mc| {
-                    if mc.id.starts_with("cx:") { cx_on } else { cc_on }
+                    if mc.id.starts_with("cx:") {
+                        cx_on
+                    } else {
+                        cc_on
+                    }
                 }) {
                     let f = &mc.animations[mc.state.current_anim].frames[mc.state.current_frame];
                     let x = available.min.x + mc.x_offset + (mc.max_width - f.width) / 2.0;
                     let y = available.max.y - f.height - f.bottom_offset;
 
-                    let rect = egui::Rect::from_min_size(
-                        egui::pos2(x, y),
-                        egui::vec2(f.width, f.height),
-                    );
+                    let rect =
+                        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(f.width, f.height));
 
                     let move_speed = mc.animations[mc.state.current_anim].move_speed;
                     let uv = if mc.move_direction < 0.0 && move_speed > 0.0 {
@@ -1894,7 +2051,8 @@ impl eframe::App for UnifiedCatApp {
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
                     };
 
-                    ui.painter().image(f.texture.id(), rect, uv, egui::Color32::WHITE);
+                    ui.painter()
+                        .image(f.texture.id(), rect, uv, egui::Color32::WHITE);
                 }
 
                 // 再画大猫（在上层）+ 拖拽交互
@@ -1910,10 +2068,8 @@ impl eframe::App for UnifiedCatApp {
                     let y = (base_y + self.drag_offset.y)
                         .clamp(available.min.y, available.max.y - f.height);
 
-                    let rect = egui::Rect::from_min_size(
-                        egui::pos2(x, y),
-                        egui::vec2(f.width, f.height),
-                    );
+                    let rect =
+                        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(f.width, f.height));
 
                     // 保存猫矩形供下帧鼠标穿透检测使用
                     self.last_cat_rect = rect;
@@ -1925,14 +2081,12 @@ impl eframe::App for UnifiedCatApp {
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
                     };
 
-                    ui.painter().image(f.texture.id(), rect, uv, egui::Color32::WHITE);
+                    ui.painter()
+                        .image(f.texture.id(), rect, uv, egui::Color32::WHITE);
 
                     // ---- 拖拽交互 ----
-                    let drag_response = ui.interact(
-                        rect,
-                        egui::Id::new("main_cat_drag"),
-                        egui::Sense::drag(),
-                    );
+                    let drag_response =
+                        ui.interact(rect, egui::Id::new("main_cat_drag"), egui::Sense::drag());
                     if drag_response.dragged() {
                         self.is_dragging = true;
                         self.snap_back_start = None; // 打断正在回弹的动画
@@ -1999,19 +2153,26 @@ impl eframe::App for UnifiedCatApp {
                     // 大猫上方的气泡 -- PermissionRequest 计数
                     if cat.pending_permission_count > 0 {
                         let bubble_w = EXPANDED_W;
-                        let bubble_x = available.min.x + cat.x_offset
-                            + (cat.max_width - bubble_w) / 2.0 + self.drag_offset.x;
+                        let bubble_x = available.min.x
+                            + cat.x_offset
+                            + (cat.max_width - bubble_w) / 2.0
+                            + self.drag_offset.x;
                         let bubble_y = y - 22.0;
                         let bubble_rect = egui::Rect::from_min_size(
-                            egui::pos2(bubble_x.max(available.min.x), bubble_y.max(available.min.y)),
+                            egui::pos2(
+                                bubble_x.max(available.min.x),
+                                bubble_y.max(available.min.y),
+                            ),
                             egui::vec2(bubble_w, 18.0),
                         );
                         ui.painter().rect_filled(
-                            bubble_rect, 4.0,
+                            bubble_rect,
+                            4.0,
                             egui::Color32::from_rgba_unmultiplied(245, 243, 240, 230),
                         );
                         ui.painter().rect_stroke(
-                            bubble_rect, 4.0,
+                            bubble_rect,
+                            4.0,
                             egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 40)),
                             epaint::StrokeKind::Outside,
                         );
@@ -2029,19 +2190,26 @@ impl eframe::App for UnifiedCatApp {
                     if let Some(ref text) = cat.notification_text {
                         if now < cat.notification_expire {
                             let bubble_w = EXPANDED_W;
-                            let bubble_x = available.min.x + cat.x_offset
-                                + (cat.max_width - bubble_w) / 2.0 + self.drag_offset.x;
+                            let bubble_x = available.min.x
+                                + cat.x_offset
+                                + (cat.max_width - bubble_w) / 2.0
+                                + self.drag_offset.x;
                             let bubble_y = y - 22.0;
                             let bubble_rect = egui::Rect::from_min_size(
-                                egui::pos2(bubble_x.max(available.min.x), bubble_y.max(available.min.y)),
+                                egui::pos2(
+                                    bubble_x.max(available.min.x),
+                                    bubble_y.max(available.min.y),
+                                ),
                                 egui::vec2(bubble_w, 18.0),
                             );
                             ui.painter().rect_filled(
-                                bubble_rect, 4.0,
+                                bubble_rect,
+                                4.0,
                                 egui::Color32::from_rgba_unmultiplied(245, 243, 240, 230),
                             );
                             ui.painter().rect_stroke(
-                                bubble_rect, 4.0,
+                                bubble_rect,
+                                4.0,
                                 egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 40)),
                                 epaint::StrokeKind::Outside,
                             );
@@ -2057,8 +2225,7 @@ impl eframe::App for UnifiedCatApp {
                 }
 
                 // 画 cx 主猫 + 拖拽交互 (cx_on 时才画)
-                if cx_on
-                {
+                if cx_on {
                     let cat = &self.cx_main_cat;
                     let f = &cat.animations[cat.state.current_anim].frames[cat.state.current_frame];
                     let base_x = available.min.x + cat.x_offset + (cat.max_width - f.width) / 2.0;
@@ -2069,10 +2236,8 @@ impl eframe::App for UnifiedCatApp {
                     let y = (base_y + self.cx_drag_offset.y)
                         .clamp(available.min.y, available.max.y - f.height);
 
-                    let rect = egui::Rect::from_min_size(
-                        egui::pos2(x, y),
-                        egui::vec2(f.width, f.height),
-                    );
+                    let rect =
+                        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(f.width, f.height));
 
                     self.cx_last_cat_rect = rect;
 
@@ -2083,14 +2248,12 @@ impl eframe::App for UnifiedCatApp {
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
                     };
 
-                    ui.painter().image(f.texture.id(), rect, uv, egui::Color32::WHITE);
+                    ui.painter()
+                        .image(f.texture.id(), rect, uv, egui::Color32::WHITE);
 
                     // 拖拽交互
-                    let drag_response = ui.interact(
-                        rect,
-                        egui::Id::new("cx_cat_drag"),
-                        egui::Sense::drag(),
-                    );
+                    let drag_response =
+                        ui.interact(rect, egui::Id::new("cx_cat_drag"), egui::Sense::drag());
                     if drag_response.dragged() {
                         self.cx_is_dragging = true;
                         self.cx_snap_back_start = None;
@@ -2146,19 +2309,26 @@ impl eframe::App for UnifiedCatApp {
                     // cx PermissionRequest 气泡
                     if cat.pending_permission_count > 0 {
                         let bubble_w = EXPANDED_W;
-                        let bubble_x = available.min.x + cat.x_offset
-                            + (cat.max_width - bubble_w) / 2.0 + self.cx_drag_offset.x;
+                        let bubble_x = available.min.x
+                            + cat.x_offset
+                            + (cat.max_width - bubble_w) / 2.0
+                            + self.cx_drag_offset.x;
                         let bubble_y = y - 22.0;
                         let bubble_rect = egui::Rect::from_min_size(
-                            egui::pos2(bubble_x.max(available.min.x), bubble_y.max(available.min.y)),
+                            egui::pos2(
+                                bubble_x.max(available.min.x),
+                                bubble_y.max(available.min.y),
+                            ),
                             egui::vec2(bubble_w, 18.0),
                         );
                         ui.painter().rect_filled(
-                            bubble_rect, 4.0,
+                            bubble_rect,
+                            4.0,
                             egui::Color32::from_rgba_unmultiplied(245, 243, 240, 230),
                         );
                         ui.painter().rect_stroke(
-                            bubble_rect, 4.0,
+                            bubble_rect,
+                            4.0,
                             egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 40)),
                             epaint::StrokeKind::Outside,
                         );
@@ -2176,19 +2346,26 @@ impl eframe::App for UnifiedCatApp {
                     if let Some(ref text) = cat.notification_text {
                         if now < cat.notification_expire {
                             let bubble_w = EXPANDED_W;
-                            let bubble_x = available.min.x + cat.x_offset
-                                + (cat.max_width - bubble_w) / 2.0 + self.cx_drag_offset.x;
+                            let bubble_x = available.min.x
+                                + cat.x_offset
+                                + (cat.max_width - bubble_w) / 2.0
+                                + self.cx_drag_offset.x;
                             let bubble_y = y - 22.0;
                             let bubble_rect = egui::Rect::from_min_size(
-                                egui::pos2(bubble_x.max(available.min.x), bubble_y.max(available.min.y)),
+                                egui::pos2(
+                                    bubble_x.max(available.min.x),
+                                    bubble_y.max(available.min.y),
+                                ),
                                 egui::vec2(bubble_w, 18.0),
                             );
                             ui.painter().rect_filled(
-                                bubble_rect, 4.0,
+                                bubble_rect,
+                                4.0,
                                 egui::Color32::from_rgba_unmultiplied(245, 243, 240, 230),
                             );
                             ui.painter().rect_stroke(
-                                bubble_rect, 4.0,
+                                bubble_rect,
+                                4.0,
                                 egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 40)),
                                 epaint::StrokeKind::Outside,
                             );
@@ -2278,7 +2455,10 @@ fn main_screen_snapshot(screens: &[MacScreenSnapshot]) -> Option<&MacScreenSnaps
 /// - `Some(&MacScreenSnapshot)`：找到对应屏幕。
 /// - `None`：当前快照中不存在该 ID。
 #[cfg(target_os = "macos")]
-fn screen_by_id<'a>(screens: &'a [MacScreenSnapshot], screen_id: &str) -> Option<&'a MacScreenSnapshot> {
+fn screen_by_id<'a>(
+    screens: &'a [MacScreenSnapshot],
+    screen_id: &str,
+) -> Option<&'a MacScreenSnapshot> {
     screens.iter().find(|screen| screen.id == screen_id)
 }
 
@@ -2326,7 +2506,10 @@ fn resolve_dock_anchor_screen<'a>(
 /// 错误处理与失败场景：
 /// - 不返回错误；调用方需确保 `anchor_screen` 来自当前采样结果。
 #[cfg(target_os = "macos")]
-fn build_floor_mode_sample(anchor_screen: &MacScreenSnapshot, autohide: bool) -> DockPlacementSample {
+fn build_floor_mode_sample(
+    anchor_screen: &MacScreenSnapshot,
+    autohide: bool,
+) -> DockPlacementSample {
     let walk_bounds = anchor_screen.visible_frame.clone();
     DockPlacementSample {
         dock_snapshot: crate::cat_layout::DockSnapshot::side(anchor_screen.id.clone(), autohide),
@@ -2384,9 +2567,8 @@ fn select_side_dock_anchor_screen<'a>(
                 .map(|(screen, _)| screen)
         };
 
-    let left_inset = |screen: &MacScreenSnapshot| -> f32 {
-        (screen.visible_frame.x - screen.frame.x).max(0.0)
-    };
+    let left_inset =
+        |screen: &MacScreenSnapshot| -> f32 { (screen.visible_frame.x - screen.frame.x).max(0.0) };
     let right_inset = |screen: &MacScreenSnapshot| -> f32 {
         let frame_right = screen.frame.x + screen.frame.width;
         let visible_right = screen.visible_frame.x + screen.visible_frame.width;
@@ -2522,17 +2704,21 @@ fn dock_autohide_enabled() -> bool {
         != 0
 }
 
-/// 计算虚拟桌面的全局顶部坐标。
+/// 计算 winit/macOS 坐标系所依赖的“主显示器高度”。
 ///
 /// 语义与边界：
-/// - 以所有屏幕 `frame` 的最高 `y + height` 作为虚拟桌面顶部。
-/// - 屏幕集合为空时返回 `None`，由调用方决定兜底策略。
+/// - winit 在 macOS 下使用 CoreGraphics 的全局坐标：原点位于主显示器左上角，
+///   Y 轴向下增长。
+/// - AppKit / `NSScreen` 则使用主显示器左下角为原点、Y 轴向上增长的坐标系。
+/// - 该函数返回主显示器高度，用于把 AppKit 的 `visible_frame.y` 换算到 winit
+///   所需的“距离主显示器顶部”语义。
+/// - 优先选择 `frame` 覆盖全局原点 `(0, 0)` 的屏幕；若找不到，再退回主屏标记。
 ///
 /// 入参：
 /// - `screens`：同一轮采样得到的全量屏幕快照。
 ///
 /// 返回：
-/// - `Some(f32)`：虚拟桌面全局顶部坐标（point）。
+/// - `Some(f32)`：主显示器高度（point）。
 /// - `None`：输入为空。
 ///
 /// 错误处理与失败场景：
@@ -2541,35 +2727,37 @@ fn dock_autohide_enabled() -> bool {
 /// 关键副作用：
 /// - 无。
 #[cfg(target_os = "macos")]
-fn desktop_global_top(screens: &[MacScreenSnapshot]) -> Option<f32> {
+fn main_display_height(screens: &[MacScreenSnapshot]) -> Option<f32> {
     screens
         .iter()
-        .map(|screen| screen.frame.y + screen.frame.height)
-        .reduce(f32::max)
+        .find(|screen| screen.frame.contains_point(0.0, 0.0))
+        .or_else(|| main_screen_snapshot(screens))
+        .map(|screen| screen.frame.height)
 }
 
-/// 将 `visible_frame` 转换为当前窗口使用的“离虚拟桌面顶部距离”语义。
+/// 将 `visible_frame` 转换为当前窗口使用的“离主显示器顶部距离”语义。
 ///
 /// 语义与边界：
-/// - 该公式与历史实现保持兼容：`top - visible_bottom`。
-/// - `top` 取虚拟桌面的全局顶部，避免锚点屏不在顶层时丢失垂直偏移。
-/// - 返回值供窗口 Y 坐标计算使用，不改变现有渲染逻辑。
+/// - 返回值对齐 winit/macOS 的全局坐标系：相对主显示器顶部测量，Y 轴向下。
+/// - 对位于主显示器上方的副屏，该值会自然变为 `<= 0`，避免窗口被错误地推到
+///   另一块屏幕上。
+/// - 对位于主显示器下方的副屏，该值会大于主显示器高度，保持纵向偏移正确。
 ///
 /// 入参：
 /// - `screens`：同一轮采样得到的全量屏幕快照。
 /// - `screen`：Dock 所在锚点屏幕快照。
 ///
 /// 返回：
-/// - 基于虚拟桌面全局顶部换算后的基线值（point）。
+/// - 基于主显示器顶部换算后的基线值（point）。
 ///
 /// 错误处理与失败场景：
-/// - 当 `screens` 为空时，退化为锚点屏幕顶部，保持旧路径可用性。
+/// - 当 `screens` 为空时，退化为锚点屏幕高度，保持旧路径可用性。
 ///
 /// 关键副作用：
 /// - 无。
 #[cfg(target_os = "macos")]
 fn legacy_visible_bottom(screens: &[MacScreenSnapshot], screen: &MacScreenSnapshot) -> f32 {
-    let top = desktop_global_top(screens).unwrap_or(screen.frame.y + screen.frame.height);
+    let top = main_display_height(screens).unwrap_or(screen.frame.height);
     top - screen.visible_frame.y
 }
 
@@ -2590,7 +2778,10 @@ fn legacy_visible_bottom(screens: &[MacScreenSnapshot], screen: &MacScreenSnapsh
 /// 错误处理与失败场景：
 /// - 本函数内部不返回错误；若 AX 不可用，会自动退化到估算路径。
 #[cfg(target_os = "macos")]
-fn get_dock_sample(screens: &[MacScreenSnapshot], anchor_screen: &MacScreenSnapshot) -> DockPlacementSample {
+fn get_dock_sample(
+    screens: &[MacScreenSnapshot],
+    anchor_screen: &MacScreenSnapshot,
+) -> DockPlacementSample {
     get_dock_sample_with_preferred_anchor(screens, anchor_screen, None)
 }
 
@@ -2651,6 +2842,71 @@ fn get_dock_sample_with_preferred_anchor(
         dock_frame: None,
     };
     build_bottom_mode_sample(anchor_screen, &bounds, autohide)
+}
+
+/// 基于 Dock AXList 的原始几何值构造底部 Dock 边界。
+///
+/// 语义与边界：
+/// - 输入值直接来自 Accessibility API 的 `AXPosition/AXSize`。
+/// - `AXPosition.y` 在运行时会先换算到 AppKit 使用的全局坐标系，再参与锚屏判断；
+///   这样上下堆叠多屏时不会把底部 Dock 误判到其它屏幕。
+/// - 仅负责把原始几何换算为运行时使用的 `DockHorizontalBounds`，不处理权限与 AX
+///   遍历流程。
+/// - 若几何值无法映射到任何屏幕，返回 `None`，由调用方回退到其它路径。
+///
+/// 入参：
+/// - `screens`：当前轮次的屏幕快照。
+/// - `dock_left`：Dock AXList 的水平起点（point）。
+/// - `dock_vertical_origin`：Dock AXList 返回的垂直基准值（point）。
+/// - `dock_width`/`dock_height`：Dock AXList 尺寸（point）。
+///
+/// 返回：
+/// - `Some(DockHorizontalBounds)`：成功识别锚点屏幕并得到水平活动范围。
+/// - `None`：几何值不合法，或 Dock 无法归属到当前任一屏幕。
+///
+/// 错误处理与失败场景：
+/// - 不抛异常；调用方用 `Option` 继续走非 AX 回退逻辑。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn dock_bounds_from_ax_list_metrics(
+    screens: &[MacScreenSnapshot],
+    dock_left: f32,
+    dock_vertical_origin: f32,
+    dock_width: f32,
+    dock_height: f32,
+) -> Option<DockHorizontalBounds> {
+    let main_height = main_display_height(screens).unwrap_or(dock_height);
+    let dock_right = dock_left + dock_width;
+    let dock_bottom = main_height - dock_vertical_origin;
+
+    // 用 AXList 高度推算圆角: squircle 圆角 ≈ 高度 × 0.27
+    let corner_r = (dock_height * 0.27).max(10.0);
+    let left = dock_left + corner_r;
+    let right = dock_right - corner_r;
+
+    let dock_mid_x = (dock_left + dock_right) / 2.0;
+    let dock_mid_y = dock_bottom + dock_height / 2.0;
+    let anchor_screen = find_anchor_screen(screens, dock_mid_x, dock_mid_y)?;
+    let screen_left = anchor_screen.frame.x;
+    let screen_right = anchor_screen.frame.x + anchor_screen.frame.width;
+    if right <= left || left < screen_left || right > screen_right {
+        return None;
+    }
+
+    let dock_frame = crate::cat_layout::Rect::new(
+        dock_left,
+        dock_bottom,
+        (dock_right - dock_left).max(0.0),
+        dock_height.max(0.0),
+    );
+    Some(DockHorizontalBounds {
+        anchor_screen_id: anchor_screen.id.clone(),
+        left,
+        right,
+        dock_frame: Some(dock_frame),
+    })
 }
 
 /// 通过 Accessibility API 读取 Bottom 模式 Dock 边界 (精确方法)。
@@ -2811,36 +3067,13 @@ fn get_dock_bounds_ax(screens: &[MacScreenSnapshot]) -> Option<DockHorizontalBou
             CFRelease(pos_val);
             CFRelease(size_val);
 
-            let dock_left = pos[0] as f32;
-            let dock_right = (pos[0] + size[0]) as f32;
-            let dock_height = size[1] as f32;
-            let dock_top = pos[1] as f32 + size[1] as f32;
-
-            // 用 AXList 高度推算圆角: squircle 圆角 ≈ 高度 × 0.27
-            let corner_r = (dock_height * 0.27).max(10.0);
-            let left = dock_left + corner_r;
-            let right = dock_right - corner_r;
-
-            let dock_mid_x = (dock_left + dock_right) / 2.0;
-            let dock_mid_y = dock_top - dock_height / 2.0;
-            if let Some(anchor_screen) = find_anchor_screen(screens, dock_mid_x, dock_mid_y) {
-                let screen_left = anchor_screen.frame.x;
-                let screen_right = anchor_screen.frame.x + anchor_screen.frame.width;
-                if right > left && left >= screen_left && right <= screen_right {
-                    let dock_frame = crate::cat_layout::Rect::new(
-                        dock_left,
-                        dock_top - dock_height,
-                        (dock_right - dock_left).max(0.0),
-                        dock_height.max(0.0),
-                    );
-                    result = Some(DockHorizontalBounds {
-                        anchor_screen_id: anchor_screen.id.clone(),
-                        left,
-                        right,
-                        dock_frame: Some(dock_frame),
-                    });
-                }
-            }
+            result = dock_bounds_from_ax_list_metrics(
+                screens,
+                pos[0] as f32,
+                pos[1] as f32,
+                size[0] as f32,
+                size[1] as f32,
+            );
             break;
         }
 
@@ -2963,12 +3196,7 @@ fn get_dock_bounds_estimate(screen_left: f32, screen_w: f32) -> (f32, f32) {
 fn build_screen_id(name: &str, frame: &crate::cat_layout::Rect, scale_factor: f32) -> String {
     format!(
         "{}|{:.1},{:.1},{:.1},{:.1}|{:.2}",
-        name,
-        frame.x,
-        frame.y,
-        frame.width,
-        frame.height,
-        scale_factor
+        name, frame.x, frame.y, frame.width, frame.height, scale_factor
     )
 }
 
@@ -3061,21 +3289,106 @@ pub fn hide_dock_icon() {
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 }
 
-/// macOS: 初始化窗口外观（去阴影 + 默认鼠标穿透）
+/// macOS 透明猫窗口的外观配置。
+///
+/// 语义与边界：
+/// - 仅描述窗口创建后的 AppKit 外观收尾，不承载 Dock 布局或渲染逻辑。
+/// - `opaque=false` 与透明背景需要同时配置，避免透明窗口被系统当作不透明底色合成。
+///
+/// 关键副作用：
+/// - 无；仅返回静态配置值。
 #[cfg(target_os = "macos")]
-fn setup_window_appearance() {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MacWindowAppearanceConfig {
+    ignores_mouse_events: bool,
+    has_shadow: bool,
+    opaque: bool,
+    order_front_regardless: bool,
+}
+
+/// 返回 macOS 透明猫窗口的默认外观配置。
+///
+/// 语义与边界：
+/// - 默认保持鼠标穿透开启，后续仍由 `update_mouse_passthrough` 动态切换。
+/// - 强制 `opaque=false`、透明背景、无阴影，并把窗口提升到前台可见顺序。
+///
+/// 返回：
+/// - 透明猫窗口初始化所需的 AppKit 配置。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；调用方负责处理窗口句柄缺失。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn macos_window_appearance_config() -> MacWindowAppearanceConfig {
+    MacWindowAppearanceConfig {
+        ignores_mouse_events: true,
+        has_shadow: false,
+        opaque: false,
+        order_front_regardless: true,
+    }
+}
+
+/// 返回当前应用的第一个窗口句柄。
+///
+/// 语义与边界：
+/// - 不依赖 `mainWindow` / `keyWindow`，因为 Accessory 应用在未激活时这两个值可能为空。
+/// - 仅返回窗口数组中的第一个窗口，符合当前单窗口猫应用的结构假设。
+///
+/// 返回：
+/// - `Some(window)`：找到窗口。
+/// - `None`：当前应用尚未创建任何窗口。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；窗口数组为空时返回 `None`。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn first_app_window() -> Option<*mut objc2::runtime::AnyObject> {
+    use objc2::runtime::AnyObject;
     use objc2_app_kit::NSApplication;
     use objc2_foundation::MainThreadMarker;
 
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
     let app = NSApplication::sharedApplication(mtm);
-    if let Some(window) = unsafe { app.mainWindow() } {
-        unsafe {
-            // 默认鼠标穿透（后续会根据鼠标位置动态切换）
-            let _: () = objc2::msg_send![&*window, setIgnoresMouseEvents: true];
-            // 去掉窗口阴影
-            let _: () = objc2::msg_send![&*window, setHasShadow: false];
+    unsafe {
+        let windows: *mut AnyObject = objc2::msg_send![&*app, windows];
+        let count: usize = objc2::msg_send![windows, count];
+        if count == 0 {
+            return None;
+        }
+        let window: *mut AnyObject = objc2::msg_send![windows, objectAtIndex: 0_usize];
+        if window.is_null() {
+            None
+        } else {
+            Some(window)
+        }
+    }
+}
 
+/// macOS: 初始化窗口外观（去阴影 + 默认鼠标穿透）
+#[cfg(target_os = "macos")]
+fn setup_window_appearance() {
+    use objc2::runtime::AnyClass;
+    use objc2::runtime::AnyObject;
+
+    if let Some(window) = first_app_window() {
+        let config = macos_window_appearance_config();
+        unsafe {
+            let _: () =
+                objc2::msg_send![window, setIgnoresMouseEvents: config.ignores_mouse_events];
+            let _: () = objc2::msg_send![window, setHasShadow: config.has_shadow];
+            let _: () = objc2::msg_send![window, setOpaque: config.opaque];
+
+            let ns_color_cls = AnyClass::get("NSColor").expect("NSColor class should exist");
+            let clear_color: *mut AnyObject = objc2::msg_send![ns_color_cls, clearColor];
+            let _: () = objc2::msg_send![window, setBackgroundColor: clear_color];
+
+            if config.order_front_regardless {
+                let _: () = objc2::msg_send![window, orderFrontRegardless];
+            }
         }
     }
 }
@@ -3090,24 +3403,13 @@ fn setup_window_appearance() {}
 /// - 正在拖拽时：始终关闭穿透
 #[cfg(target_os = "macos")]
 fn update_mouse_passthrough(cat_rect: egui::Rect, is_dragging: bool) {
-    use objc2_app_kit::NSApplication;
-    use objc2_foundation::{CGPoint, CGRect, MainThreadMarker};
-    use objc2::runtime::{AnyClass, AnyObject};
-
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let app = NSApplication::sharedApplication(mtm);
+    use objc2::runtime::AnyClass;
+    use objc2_foundation::{CGPoint, CGRect};
 
     unsafe {
-        // 获取第一个窗口
-        let windows: *mut AnyObject = objc2::msg_send![&*app, windows];
-        let count: usize = objc2::msg_send![windows, count];
-        if count == 0 {
+        let Some(window) = first_app_window() else {
             return;
-        }
-        let window: *mut AnyObject = objc2::msg_send![windows, objectAtIndex: 0_usize];
-        if window.is_null() {
-            return;
-        }
+        };
 
         // 拖拽中：始终允许鼠标事件
         if is_dragging {
@@ -3140,6 +3442,44 @@ fn update_mouse_passthrough(_cat_rect: egui::Rect, _is_dragging: bool) {}
 // ============================================================
 // 入口函数
 // ============================================================
+
+/// 构造桌面像素猫的原生窗口选项。
+///
+/// 语义与边界：
+/// - 统一收口窗口尺寸、初始位置、透明度与置顶策略，避免 `run_cat` 内散落平台细节。
+/// - 显式固定 `renderer=wgpu`，避免 macOS 透明窗口回退到 `glow/OpenGL`。
+///
+/// 入参：
+/// - `initial_layout`：启动阶段计算出的窗口布局快照。
+///
+/// 返回：
+/// - 可直接传给 `eframe::run_native` 的 `NativeOptions`。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；平台不支持的细节由 `eframe/winit` 在运行时兜底。
+///
+/// 关键副作用：
+/// - 无。
+fn build_cat_native_options(initial_layout: &AppliedLayout) -> eframe::NativeOptions {
+    let window_width = initial_layout.window_width;
+    let window_height = CELL_SIZE as f32 * SCALE + 22.0;
+    let initial_pos = [
+        initial_layout.window_origin.x,
+        initial_layout.window_origin.y - window_height,
+    ];
+
+    eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([window_width, window_height])
+            .with_position(initial_pos)
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_always_on_top()
+            .with_taskbar(false),
+        renderer: eframe::Renderer::Wgpu,
+        ..Default::default()
+    }
+}
 
 /// 启动桌面像素猫主程序。
 ///
@@ -3176,23 +3516,7 @@ pub fn run_cat() {
     #[cfg(not(target_os = "macos"))]
     let initial_layout = AppliedLayout::fallback(200.0, 1200.0, 800.0);
 
-    let window_width = initial_layout.window_width;
-    let window_height = CELL_SIZE as f32 * SCALE + 22.0;
-    let initial_pos = [
-        initial_layout.window_origin.x,
-        initial_layout.window_origin.y - window_height,
-    ];
-
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([window_width, window_height])
-            .with_position(initial_pos)
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_always_on_top()
-            .with_taskbar(false),
-        ..Default::default()
-    };
+    let options = build_cat_native_options(&initial_layout);
 
     let startup_layout = initial_layout.clone();
 
@@ -3218,10 +3542,11 @@ mod tests {
     use crate::tray;
 
     use super::{
-        build_floor_mode_sample, build_screen_id, dock_refresh_interval_for_tick, layout_changed,
-        legacy_visible_bottom, main_screen_snapshot, refresh_interval, resolve_dock_anchor_screen,
-        resolve_next_applied_layout, should_run_fast_autohide_probe,
-        select_side_dock_anchor_screen, select_side_dock_anchor_screen_with_preference,
+        build_floor_mode_sample, build_screen_id, dock_bounds_from_ax_list_metrics,
+        dock_refresh_interval_for_tick, layout_changed, legacy_visible_bottom,
+        main_screen_snapshot, refresh_interval, resolve_dock_anchor_screen,
+        resolve_next_applied_layout, select_side_dock_anchor_screen,
+        select_side_dock_anchor_screen_with_preference, should_run_fast_autohide_probe,
         AppliedLayout, MacScreenSnapshot,
     };
 
@@ -3379,6 +3704,52 @@ mod tests {
     }
 
     #[test]
+    fn base_y_should_use_main_display_height_when_screen_is_stacked_above_main() {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1512.0, 982.0),
+            crate::cat_layout::Rect::new(0.0, 58.0, 1512.0, 891.0),
+            2.0,
+            true,
+        );
+        let upper = make_screen(
+            "Upper External",
+            crate::cat_layout::Rect::new(-153.0, 982.0, 2560.0, 1440.0),
+            crate::cat_layout::Rect::new(-153.0, 982.0, 2560.0, 1440.0),
+            1.0,
+            false,
+        );
+        let screens = vec![main.clone(), upper];
+
+        let expected_base_y = main.frame.height - main.visible_frame.y;
+        assert_eq!(legacy_visible_bottom(&screens, &main), expected_base_y);
+    }
+
+    #[test]
+    fn dock_ax_metrics_should_anchor_to_main_screen_in_vertical_stack() {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1512.0, 982.0),
+            crate::cat_layout::Rect::new(0.0, 58.0, 1512.0, 891.0),
+            2.0,
+            true,
+        );
+        let upper = make_screen(
+            "Upper External",
+            crate::cat_layout::Rect::new(-153.0, 982.0, 2560.0, 1440.0),
+            crate::cat_layout::Rect::new(-153.0, 982.0, 2560.0, 1440.0),
+            1.0,
+            false,
+        );
+        let screens = vec![main.clone(), upper];
+
+        let bounds = dock_bounds_from_ax_list_metrics(&screens, 295.0, 982.0, 922.0, 52.0)
+            .expect("AX geometry should still resolve to a screen");
+
+        assert_eq!(bounds.anchor_screen_id, main.id);
+    }
+
+    #[test]
     fn base_y_uses_virtual_desktop_top_when_anchor_screen_is_below_main() {
         let main = make_screen(
             "Built-in Retina",
@@ -3413,10 +3784,7 @@ mod tests {
         let sample = build_floor_mode_sample(&screen, true);
 
         assert_eq!(sample.walk_bounds.x, screen.visible_frame.x);
-        assert_eq!(
-            sample.walk_bounds.width,
-            screen.visible_frame.width
-        );
+        assert_eq!(sample.walk_bounds.width, screen.visible_frame.width);
     }
 
     #[test]
@@ -3526,6 +3894,30 @@ mod tests {
 
         assert!(!should_run_fast_autohide_probe(Some(&autohide_layout)));
         assert!(should_run_fast_autohide_probe(None));
+    }
+
+    #[test]
+    fn cat_native_options_should_prefer_wgpu_renderer() {
+        let layout = make_layout(
+            "main",
+            0.0,
+            1092.0,
+            1200.0,
+            crate::cat_layout::DockPlacementMode::Bottom,
+        );
+
+        let options = super::build_cat_native_options(&layout);
+        assert_eq!(options.renderer.to_string(), "wgpu");
+    }
+
+    #[test]
+    fn macos_window_appearance_should_force_clear_non_opaque_window() {
+        let config = super::macos_window_appearance_config();
+
+        assert!(config.ignores_mouse_events);
+        assert!(!config.has_shadow);
+        assert!(!config.opaque);
+        assert!(config.order_front_regardless);
     }
 
     #[test]
