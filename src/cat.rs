@@ -406,8 +406,9 @@ fn extract_cropped_frame(
 #[derive(Clone)]
 struct DockBoundsResult {
     anchor_screen_id: String,
-    dock_left: f32,
-    dock_right: f32,
+    dock_mode: crate::cat_layout::DockPlacementMode,
+    dock_frame: Option<crate::cat_layout::Rect>,
+    walk_bounds: crate::cat_layout::Rect,
     base_y: f32,
 }
 
@@ -416,6 +417,7 @@ struct DockBoundsResult {
 /// 语义与边界：
 /// - `left`/`right` 是全局 point 坐标。
 /// - `anchor_screen_id` 必须来自同一轮屏幕采样快照。
+/// - `dock_frame` 在 AX 路径下保存真实 Dock 矩形；估算路径可为空。
 ///
 /// 关键副作用：
 /// - 无。
@@ -425,6 +427,26 @@ struct DockHorizontalBounds {
     anchor_screen_id: String,
     left: f32,
     right: f32,
+    dock_frame: Option<crate::cat_layout::Rect>,
+}
+
+/// Dock 采样统一输出。
+///
+/// 语义与边界：
+/// - `dock_snapshot` 对齐 `cat_layout::DockSnapshot`，用于描述 Bottom/Floor 模式。
+/// - `walk_bounds` 描述运行时水平活动区域，单位为全局 point 坐标。
+///
+/// 入参：
+/// - 无。
+///
+/// 返回：
+/// - 无。
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug)]
+struct DockPlacementSample {
+    anchor_screen_id: String,
+    dock_snapshot: crate::cat_layout::DockSnapshot,
+    walk_bounds: crate::cat_layout::Rect,
 }
 
 /// macOS 屏幕快照（全局坐标）。
@@ -911,15 +933,16 @@ impl UnifiedCatApp {
             {
                 if let Some(screens) = screen_info {
                     if let Some(fallback_screen) = main_screen_snapshot(&screens) {
-                        let dock_bounds = get_dock_bounds(&screens, fallback_screen);
-                        if dock_bounds.right > dock_bounds.left {
+                        let dock_sample = get_dock_sample(&screens, fallback_screen);
+                        if dock_sample.walk_bounds.width > 0.0 {
                             let dock_screen =
-                                resolve_dock_anchor_screen(&screens, fallback_screen, &dock_bounds);
+                                resolve_dock_anchor_screen(&screens, fallback_screen, &dock_sample);
                             let mut result = result_arc.lock().unwrap();
                             *result = Some(DockBoundsResult {
                                 anchor_screen_id: dock_screen.id.clone(),
-                                dock_left: dock_bounds.left,
-                                dock_right: dock_bounds.right,
+                                dock_mode: dock_sample.dock_snapshot.mode,
+                                dock_frame: dock_sample.dock_snapshot.dock_frame.clone(),
+                                walk_bounds: dock_sample.walk_bounds.clone(),
                                 base_y: legacy_visible_bottom(&screens, dock_screen),
                             });
                         }
@@ -940,9 +963,11 @@ impl UnifiedCatApp {
         if let Some(bounds) = result {
             let old_width = self.window_width;
             let _anchor_screen_id = &bounds.anchor_screen_id;
-            self.dock_left = bounds.dock_left;
-            self.dock_right = bounds.dock_right;
-            self.window_width = bounds.dock_right - bounds.dock_left;
+            let _dock_mode = bounds.dock_mode;
+            let _dock_frame = &bounds.dock_frame;
+            self.dock_left = bounds.walk_bounds.x;
+            self.dock_right = bounds.walk_bounds.x + bounds.walk_bounds.width;
+            self.window_width = bounds.walk_bounds.width;
             self.base_y = bounds.base_y;
 
             // 钳位所有猫（内联以避免借用冲突）
@@ -1827,7 +1852,7 @@ fn screen_by_id<'a>(screens: &'a [MacScreenSnapshot], screen_id: &str) -> Option
 /// 入参：
 /// - `screens`：同一轮采样得到的屏幕快照集合。
 /// - `fallback_screen`：兜底屏幕（通常为主屏）。
-/// - `dock_bounds`：Dock 水平边界及其锚点屏幕 ID。
+/// - `dock_sample`：Dock 采样结果及其锚点屏幕 ID。
 ///
 /// 返回：
 /// - 与本次 Dock 结果一致的屏幕快照引用；找不到锚点时返回 `fallback_screen`。
@@ -1841,9 +1866,120 @@ fn screen_by_id<'a>(screens: &'a [MacScreenSnapshot], screen_id: &str) -> Option
 fn resolve_dock_anchor_screen<'a>(
     screens: &'a [MacScreenSnapshot],
     fallback_screen: &'a MacScreenSnapshot,
-    dock_bounds: &DockHorizontalBounds,
+    dock_sample: &DockPlacementSample,
 ) -> &'a MacScreenSnapshot {
-    screen_by_id(screens, &dock_bounds.anchor_screen_id).unwrap_or(fallback_screen)
+    screen_by_id(screens, &dock_sample.anchor_screen_id).unwrap_or(fallback_screen)
+}
+
+/// 构造 side Dock 退化模式下的 Dock 采样结果。
+///
+/// 语义与边界：
+/// - side Dock 固定使用 `DockPlacementMode::Floor`。
+/// - 活动区域必须使用锚点屏幕的 `visible_frame`，避免进入侧边 Dock 占用区。
+///
+/// 入参：
+/// - `anchor_screen`：Dock 锚定屏幕快照。
+/// - `autohide`：Dock 是否自动隐藏。
+///
+/// 返回：
+/// - `DockPlacementSample`：Floor 模式统一输出。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；调用方需确保 `anchor_screen` 来自当前采样结果。
+#[cfg(target_os = "macos")]
+fn build_floor_mode_sample(anchor_screen: &MacScreenSnapshot, autohide: bool) -> DockPlacementSample {
+    let walk_bounds = anchor_screen.visible_frame.clone();
+    DockPlacementSample {
+        anchor_screen_id: anchor_screen.id.clone(),
+        dock_snapshot: crate::cat_layout::DockSnapshot::side(anchor_screen.id.clone(), autohide),
+        walk_bounds,
+    }
+}
+
+/// 基于锚点屏幕与水平边界估算 Bottom 模式 Dock 矩形。
+///
+/// 语义与边界：
+/// - 仅用于非 AX 的估算路径。
+/// - 高度优先使用 `visible_frame.y - frame.y` 推断；推断失败时退化为 20pt。
+///
+/// 入参：
+/// - `anchor_screen`：Dock 锚定屏幕快照。
+/// - `left`/`right`：Dock 可活动水平边界（全局 point）。
+///
+/// 返回：
+/// - 估算得到的 Dock 矩形。
+#[cfg(target_os = "macos")]
+fn estimate_bottom_dock_frame(
+    anchor_screen: &MacScreenSnapshot,
+    left: f32,
+    right: f32,
+) -> crate::cat_layout::Rect {
+    let width = (right - left).max(0.0);
+    let inferred_height = (anchor_screen.visible_frame.y - anchor_screen.frame.y).max(0.0);
+    let height = if inferred_height > 0.5 {
+        inferred_height
+    } else {
+        20.0
+    };
+    let y = anchor_screen.visible_frame.y - height;
+    crate::cat_layout::Rect::new(left, y, width, height)
+}
+
+/// 构造 Bottom 模式 Dock 采样结果。
+///
+/// 语义与边界：
+/// - Bottom 模式保留 `dock_snapshot.dock_frame`，AX 路径优先使用真实矩形。
+/// - `walk_bounds` 仅表达可活动水平范围，宽度由 `left/right` 决定。
+///
+/// 入参：
+/// - `anchor_screen`：Dock 锚定屏幕快照。
+/// - `bounds`：Bottom 模式水平边界及可选真实 Dock 矩形。
+/// - `autohide`：Dock 是否自动隐藏。
+///
+/// 返回：
+/// - `DockPlacementSample`：Bottom 模式统一输出。
+#[cfg(target_os = "macos")]
+fn build_bottom_mode_sample(
+    anchor_screen: &MacScreenSnapshot,
+    bounds: &DockHorizontalBounds,
+    autohide: bool,
+) -> DockPlacementSample {
+    let dock_frame = bounds
+        .dock_frame
+        .clone()
+        .unwrap_or_else(|| estimate_bottom_dock_frame(anchor_screen, bounds.left, bounds.right));
+    let walk_bounds = crate::cat_layout::Rect::new(
+        bounds.left,
+        dock_frame.y,
+        (bounds.right - bounds.left).max(0.0),
+        dock_frame.height,
+    );
+    DockPlacementSample {
+        anchor_screen_id: anchor_screen.id.clone(),
+        dock_snapshot: crate::cat_layout::DockSnapshot::bottom(
+            anchor_screen.id.clone(),
+            dock_frame,
+            autohide,
+        ),
+        walk_bounds,
+    }
+}
+
+/// 读取 Dock 自动隐藏开关。
+///
+/// 语义与边界：
+/// - 仅解析 `defaults read com.apple.dock autohide` 的结果。
+/// - 解析失败时默认返回 `false`，保持历史行为稳定。
+#[cfg(target_os = "macos")]
+fn dock_autohide_enabled() -> bool {
+    std::process::Command::new("defaults")
+        .args(["read", "com.apple.dock", "autohide"])
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .unwrap_or(0)
+        != 0
 }
 
 /// 计算虚拟桌面的全局顶部坐标。
@@ -1897,24 +2033,26 @@ fn legacy_visible_bottom(screens: &[MacScreenSnapshot], screen: &MacScreenSnapsh
     top - screen.visible_frame.y
 }
 
-/// macOS: 获取 Dock 水平边界（全局坐标）。
+/// macOS: 获取 Dock 采样统一输出（Bottom/Floor）。
 ///
 /// 语义与边界：
 /// - 优先使用 AX 读取真实 Dock 边界；若失败则使用偏好配置估算。
-/// - 仅返回水平可活动范围 `(left, right)`，不负责垂直停靠公式。
-/// - `anchor_screen` 仅用于 side Dock 与 fallback 估算路径，避免坐标丢失。
+/// - side Dock 返回 `Floor` 模式，活动范围使用 `visible_frame`。
+/// - bottom Dock 返回 `Bottom` 模式，保留 `dock_snapshot.dock_frame`。
 ///
 /// 入参：
 /// - `screens`：当前采样到的全部屏幕快照（全局坐标）。
 /// - `anchor_screen`：默认锚定屏幕（通常是主屏）。
 ///
 /// 返回：
-/// - `DockHorizontalBounds`：Dock 水平边界及其所属屏幕 ID。
+/// - `DockPlacementSample`：可直接用于运行时布局的统一结果。
 ///
 /// 错误处理与失败场景：
 /// - 本函数内部不返回错误；若 AX 不可用，会自动退化到估算路径。
 #[cfg(target_os = "macos")]
-fn get_dock_bounds(screens: &[MacScreenSnapshot], anchor_screen: &MacScreenSnapshot) -> DockHorizontalBounds {
+fn get_dock_sample(screens: &[MacScreenSnapshot], anchor_screen: &MacScreenSnapshot) -> DockPlacementSample {
+    let autohide = dock_autohide_enabled();
+
     // Dock 不在底部时，窗口铺满锚定屏幕宽度（保持现有 floor 行为）
     if let Ok(output) = std::process::Command::new("defaults")
         .args(&["read", "com.apple.dock", "orientation"])
@@ -1922,29 +2060,28 @@ fn get_dock_bounds(screens: &[MacScreenSnapshot], anchor_screen: &MacScreenSnaps
     {
         let orientation = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if orientation == "left" || orientation == "right" {
-            return DockHorizontalBounds {
-                anchor_screen_id: anchor_screen.id.clone(),
-                left: anchor_screen.frame.x,
-                right: anchor_screen.frame.x + anchor_screen.frame.width,
-            };
+            return build_floor_mode_sample(anchor_screen, autohide);
         }
     }
 
     // 优先尝试 Accessibility API
     if let Some(bounds) = get_dock_bounds_ax(screens) {
-        return bounds;
+        let dock_screen = screen_by_id(screens, &bounds.anchor_screen_id).unwrap_or(anchor_screen);
+        return build_bottom_mode_sample(dock_screen, &bounds, autohide);
     }
 
     // Fallback: 估算
     let (left, right) = get_dock_bounds_estimate(anchor_screen.frame.x, anchor_screen.frame.width);
-    DockHorizontalBounds {
+    let bounds = DockHorizontalBounds {
         anchor_screen_id: anchor_screen.id.clone(),
         left,
         right,
-    }
+        dock_frame: None,
+    };
+    build_bottom_mode_sample(anchor_screen, &bounds, autohide)
 }
 
-/// 通过 Accessibility API 直接读取 Dock 的 AXList 元素边界 (精确方法)
+/// 通过 Accessibility API 读取 Bottom 模式 Dock 边界 (精确方法)。
 ///
 /// 权限状态由 `check_ax_permission` 在启动时一次性检查并缓存
 #[cfg(target_os = "macos")]
@@ -2118,10 +2255,17 @@ fn get_dock_bounds_ax(screens: &[MacScreenSnapshot]) -> Option<DockHorizontalBou
                 let screen_left = anchor_screen.frame.x;
                 let screen_right = anchor_screen.frame.x + anchor_screen.frame.width;
                 if right > left && left >= screen_left && right <= screen_right {
+                    let dock_frame = crate::cat_layout::Rect::new(
+                        dock_left,
+                        dock_top - dock_height,
+                        (dock_right - dock_left).max(0.0),
+                        dock_height.max(0.0),
+                    );
                     result = Some(DockHorizontalBounds {
                         anchor_screen_id: anchor_screen.id.clone(),
                         left,
                         right,
+                        dock_frame: Some(dock_frame),
                     });
                 }
             }
@@ -2436,14 +2580,15 @@ pub fn run_cat() {
     let (initial_pos, dock_left, dock_right, visible_bottom) = {
         if let Some(screens) = get_macos_screen_info() {
             if let Some(fallback_screen) = main_screen_snapshot(&screens) {
-                let dock_bounds = get_dock_bounds(&screens, fallback_screen);
+                let dock_sample = get_dock_sample(&screens, fallback_screen);
                 let dock_screen =
-                    resolve_dock_anchor_screen(&screens, fallback_screen, &dock_bounds);
+                    resolve_dock_anchor_screen(&screens, fallback_screen, &dock_sample);
                 let vis_bottom = legacy_visible_bottom(&screens, dock_screen);
                 let window_height = CELL_SIZE as f32 * SCALE + 22.0;
-                let x = dock_bounds.left;
+                let x = dock_sample.walk_bounds.x;
                 let y = vis_bottom - window_height;
-                ([x, y], dock_bounds.left, dock_bounds.right, vis_bottom)
+                let right = dock_sample.walk_bounds.x + dock_sample.walk_bounds.width;
+                ([x, y], x, right, vis_bottom)
             } else {
                 ([200.0, 600.0], 200.0, 1200.0, 800.0)
             }
@@ -2485,8 +2630,9 @@ pub fn run_cat() {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
-        build_screen_id, legacy_visible_bottom, main_screen_snapshot, resolve_dock_anchor_screen,
-        DockHorizontalBounds, MacScreenSnapshot,
+        build_floor_mode_sample, build_screen_id, legacy_visible_bottom, main_screen_snapshot,
+        resolve_dock_anchor_screen,
+        MacScreenSnapshot,
     };
 
     fn make_screen(
@@ -2535,12 +2681,8 @@ mod tests {
         let screens = vec![main, external.clone()];
 
         let fallback_main = main_screen_snapshot(&screens).expect("main screen should exist");
-        let dock_bounds = DockHorizontalBounds {
-            anchor_screen_id: external.id.clone(),
-            left: 2140.0,
-            right: 3040.0,
-        };
-        let dock_screen = resolve_dock_anchor_screen(&screens, fallback_main, &dock_bounds);
+        let dock_sample = build_floor_mode_sample(&external, false);
+        let dock_screen = resolve_dock_anchor_screen(&screens, fallback_main, &dock_sample);
 
         assert_eq!(
             legacy_visible_bottom(&screens, &external),
@@ -2572,5 +2714,24 @@ mod tests {
 
         let expected_base_y = (main.frame.y + main.frame.height) - lower.visible_frame.y;
         assert_eq!(legacy_visible_bottom(&screens, &lower), expected_base_y);
+    }
+
+    #[test]
+    fn floor_mode_bounds_should_use_visible_frame_width() {
+        let screen = make_screen(
+            "Right Dock Screen",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1512.0, 982.0),
+            crate::cat_layout::Rect::new(96.0, 25.0, 1416.0, 957.0),
+            2.0,
+            true,
+        );
+
+        let sample = build_floor_mode_sample(&screen, true);
+
+        assert_eq!(sample.walk_bounds.x, screen.visible_frame.x);
+        assert_eq!(
+            sample.walk_bounds.width,
+            screen.visible_frame.width
+        );
     }
 }
