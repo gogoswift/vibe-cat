@@ -518,6 +518,38 @@ fn should_show_display_location_menu(
     has_seen_multiple_displays || display_count > 1
 }
 
+/// 托盘“工具类”菜单项的稳定顺序键。
+///
+/// 语义与边界：
+/// - 只描述显示位置与事件监控这组菜单项的相对顺序。
+/// - 不承载分隔线、退出项或 agent 开关项。
+///
+/// 关键副作用：
+/// - 无。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayUtilityMenuItem {
+    DisplayLocation,
+    EventMonitor,
+}
+
+/// 返回托盘工具菜单组的稳定顺序。
+///
+/// 语义与边界：
+/// - 用于统一约束“显示位置”和“事件监控”的相对顺序。
+/// - 当前约定为先显示“显示位置”，再显示“事件监控”，二者同属一个分组。
+///
+/// 返回值：
+/// - 固定长度数组，描述工具菜单组的顺序。
+///
+/// 错误处理：
+/// - 不返回错误；顺序由代码常量固定。
+fn tray_utility_menu_order() -> [TrayUtilityMenuItem; 2] {
+    [
+        TrayUtilityMenuItem::DisplayLocation,
+        TrayUtilityMenuItem::EventMonitor,
+    ]
+}
+
 /// 依据当前显示器列表把显示位置模式规范化为可用值。
 ///
 /// 语义与边界：
@@ -814,43 +846,51 @@ pub fn create_status_item(nsimages: &[Vec<Retained<NSImage>>]) -> Retained<NSSta
         CX_MENU_ITEM_PTR.store(&*cx_item as *const _ as *mut AnyObject, Ordering::Release);
         std::mem::forget(cx_item);
 
-        // 显示位置（默认隐藏，弹出前按当前显示器状态动态刷新）
-        let display_location_submenu = NSMenu::initWithTitle(mtm.alloc(), &NSString::from_str(""));
-        let display_location_item = NSMenuItem::initWithTitle_action_keyEquivalent(
-            mtm.alloc(),
-            &NSString::from_str(localized_menu_title(TranslationKey::DisplayLocation)),
-            None,
-            &NSString::from_str(""),
-        );
-        let _: () = msg_send![&*display_location_item, setSubmenu: &*display_location_submenu];
-        let _: () = msg_send![&*display_location_item, setHidden: true];
-        menu.addItem(&display_location_item);
-        DISPLAY_LOCATION_MENU_ITEM_PTR.store(
-            &*display_location_item as *const _ as *mut AnyObject,
-            Ordering::Release,
-        );
-        DISPLAY_LOCATION_SUBMENU_PTR.store(
-            &*display_location_submenu as *const _ as *mut AnyObject,
-            Ordering::Release,
-        );
-        std::mem::forget(display_location_submenu);
-        std::mem::forget(display_location_item);
-
         // 分隔线
         let sep1 = NSMenuItem::separatorItem(mtm);
         menu.addItem(&sep1);
 
-        // 事件监控
-        let gui_item = NSMenuItem::initWithTitle_action_keyEquivalent(
-            mtm.alloc(),
-            &NSString::from_str(localized_menu_title(TranslationKey::EventMonitor)),
-            Some(sel!(openGui:)),
-            &NSString::from_str("e"),
-        );
-        let _: () = msg_send![&*gui_item, setTarget: menu_handler];
-        menu.addItem(&gui_item);
-        GUI_MENU_ITEM_PTR.store(&*gui_item as *const _ as *mut AnyObject, Ordering::Release);
-        std::mem::forget(gui_item);
+        for utility_item in tray_utility_menu_order() {
+            match utility_item {
+                TrayUtilityMenuItem::DisplayLocation => {
+                    let display_location_submenu =
+                        NSMenu::initWithTitle(mtm.alloc(), &NSString::from_str(""));
+                    let display_location_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+                        mtm.alloc(),
+                        &NSString::from_str(localized_menu_title(TranslationKey::DisplayLocation)),
+                        None,
+                        &NSString::from_str(""),
+                    );
+                    let _: () =
+                        msg_send![&*display_location_item, setSubmenu: &*display_location_submenu];
+                    let _: () = msg_send![&*display_location_item, setHidden: true];
+                    menu.addItem(&display_location_item);
+                    DISPLAY_LOCATION_MENU_ITEM_PTR.store(
+                        &*display_location_item as *const _ as *mut AnyObject,
+                        Ordering::Release,
+                    );
+                    DISPLAY_LOCATION_SUBMENU_PTR.store(
+                        &*display_location_submenu as *const _ as *mut AnyObject,
+                        Ordering::Release,
+                    );
+                    std::mem::forget(display_location_submenu);
+                    std::mem::forget(display_location_item);
+                }
+                TrayUtilityMenuItem::EventMonitor => {
+                    let gui_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+                        mtm.alloc(),
+                        &NSString::from_str(localized_menu_title(TranslationKey::EventMonitor)),
+                        Some(sel!(openGui:)),
+                        &NSString::from_str("e"),
+                    );
+                    let _: () = msg_send![&*gui_item, setTarget: menu_handler];
+                    menu.addItem(&gui_item);
+                    GUI_MENU_ITEM_PTR
+                        .store(&*gui_item as *const _ as *mut AnyObject, Ordering::Release);
+                    std::mem::forget(gui_item);
+                }
+            }
+        }
 
         // 分隔线
         let sep2 = NSMenuItem::separatorItem(mtm);
@@ -944,6 +984,17 @@ mod tests {
         assert!(!super::should_show_display_location_menu(false, 1));
         assert!(super::should_show_display_location_menu(false, 2));
         assert!(super::should_show_display_location_menu(true, 1));
+    }
+
+    #[test]
+    fn tray_utility_menu_order_should_place_display_location_next_to_event_monitor() {
+        assert_eq!(
+            super::tray_utility_menu_order(),
+            [
+                super::TrayUtilityMenuItem::DisplayLocation,
+                super::TrayUtilityMenuItem::EventMonitor,
+            ]
+        );
     }
 }
 
