@@ -903,10 +903,45 @@ struct DockPlacementSample {
     walk_bounds: crate::cat_layout::Rect,
 }
 
+/// 像素猫显示位置模式。
+///
+/// 语义与边界：
+/// - `Auto` 表示跟随当前 Dock 所在显示器。
+/// - `Specific(selection_id)` 表示手动绑定到某个运行期显示器标识。
+/// - 该模式仅描述“目标显示器选择”，不直接承载 Dock 几何或窗口坐标。
+///
+/// 关键副作用：
+/// - 无；仅作为运行期配置值在模块间传递。
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DisplayLocationMode {
+    Auto,
+    Specific(String),
+}
+
+/// 托盘菜单使用的显示器选项快照。
+///
+/// 语义与边界：
+/// - `selection_id` 是运行期用于匹配显示器选择的稳定标识。
+/// - `label` 是当前会话中展示给用户的名称；若名称重复，会追加序号区分。
+/// - `is_main` 仅用于 UI 层辅助展示或排序，当前不参与布局公式。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DisplayChoice {
+    pub selection_id: String,
+    pub label: String,
+    pub is_main: bool,
+}
+
 /// macOS 屏幕快照（全局坐标）。
 ///
 /// 语义与边界：
 /// - `id` 用于在刷新周期内稳定标识屏幕。
+/// - `selection_id` 用于跨刷新周期匹配用户手动选择的显示器。
+/// - `name` 为当前系统提供的显示器名称，用于菜单展示。
 /// - `frame` / `visible_frame` 都是全局 point 坐标。
 /// - `scale_factor` 只做透传，当前任务不参与尺寸换算。
 /// - `is_main` 记录是否为主屏，用于定位默认锚点。
@@ -917,6 +952,8 @@ struct DockPlacementSample {
 #[derive(Clone, Debug)]
 struct MacScreenSnapshot {
     id: String,
+    selection_id: String,
+    name: String,
     frame: crate::cat_layout::Rect,
     visible_frame: crate::cat_layout::Rect,
     scale_factor: f32,
@@ -938,6 +975,8 @@ struct UnifiedCatApp {
     base_y: f32,
     last_poll_time: Instant,
     last_dock_refresh: Instant,
+    #[cfg(target_os = "macos")]
+    last_display_location_revision: u64,
     /// 最近一次实时探测到的 Dock 自动隐藏状态。
     dock_autohide_probe: Option<bool>,
     /// 最近一次执行 Dock 自动隐藏实时探测的时间。
@@ -1049,6 +1088,8 @@ impl UnifiedCatApp {
             base_y: initial_layout.window_origin.y,
             last_poll_time: now,
             last_dock_refresh: now,
+            #[cfg(target_os = "macos")]
+            last_display_location_revision: tray::display_location_revision(),
             dock_autohide_probe: Some(initial_layout.dock_autohide),
             last_dock_autohide_probe: now,
             dock_autohide_probe_result: Arc::new(Mutex::new(None)),
@@ -1428,7 +1469,8 @@ impl UnifiedCatApp {
     /// - `&self`：读取刷新状态并提交后台任务；不直接修改 UI。
     ///
     /// 返回：
-    /// - 无返回值；计算结果通过 `dock_result` 共享状态回传。
+    /// - `true`：成功提交了一次新的后台刷新任务。
+    /// - `false`：已有刷新任务进行中，本次未提交。
     ///
     /// 错误处理与失败场景：
     /// - 屏幕采样失败时会跳过本轮刷新，并在任务结束后恢复 `dock_refreshing` 标记。
@@ -1436,10 +1478,10 @@ impl UnifiedCatApp {
     /// 关键副作用：
     /// - 在主线程读取 `NSScreen`（避免跨线程访问 AppKit）。
     /// - 启动后台线程计算 Dock 边界并回写共享结果。
-    fn start_dock_refresh_bg(&self) {
+    fn start_dock_refresh_bg(&self) -> bool {
         let mut refreshing = self.dock_refreshing.lock().unwrap();
         if *refreshing {
-            return; // 已有后台任务在跑
+            return false; // 已有后台任务在跑
         }
         *refreshing = true;
 
@@ -1447,6 +1489,8 @@ impl UnifiedCatApp {
             .applied_layout
             .as_ref()
             .map(|layout| layout.anchor_screen_id.clone());
+        #[cfg(target_os = "macos")]
+        let display_location_mode = crate::tray::current_display_location_mode();
 
         // AppKit 需主线程调用：这里只采样屏幕快照，后台线程仅做 Dock 边界计算。
         #[cfg(target_os = "macos")]
@@ -1460,10 +1504,11 @@ impl UnifiedCatApp {
             {
                 if let Some(screens) = screen_info {
                     if let Some(fallback_screen) = main_screen_snapshot(&screens) {
-                        let dock_sample = get_dock_sample_with_preferred_anchor(
+                        let dock_sample = get_dock_sample_for_display_location(
                             &screens,
                             fallback_screen,
                             preferred_anchor_screen_id.as_deref(),
+                            display_location_mode,
                         );
                         if dock_sample.walk_bounds.width > 0.0 {
                             if let Some(layout) = compute_applied_layout_for_dock_sample(
@@ -1481,6 +1526,7 @@ impl UnifiedCatApp {
             let mut refreshing = refreshing_arc.lock().unwrap();
             *refreshing = false;
         });
+        true
     }
 
     /// 从后台结果应用 Dock 完整布局，返回是否需要窗口重摆。
@@ -1725,6 +1771,14 @@ impl eframe::App for UnifiedCatApp {
         // ---- 后台 Dock 刷新（自动隐藏时加速，不阻塞 UI） ----
         self.apply_dock_autohide_probe_result();
         self.start_dock_autohide_probe_bg(now);
+        #[cfg(target_os = "macos")]
+        {
+            let revision = tray::display_location_revision();
+            if revision != self.last_display_location_revision && self.start_dock_refresh_bg() {
+                self.last_display_location_revision = revision;
+                self.last_dock_refresh = now;
+            }
+        }
         let dock_refresh_interval =
             dock_refresh_interval_for_tick(self.applied_layout.as_ref(), self.dock_autohide_probe);
         if now.duration_since(self.last_dock_refresh) > dock_refresh_interval {
@@ -2554,6 +2608,35 @@ fn screen_by_id<'a>(
     screens.iter().find(|screen| screen.id == screen_id)
 }
 
+/// 按运行期显示器选择 ID 查找对应快照。
+///
+/// 语义与边界：
+/// - `selection_id` 用于匹配用户手动选择的目标显示器。
+/// - 仅在同一轮采样数组中查找，不跨轮次缓存对象引用。
+///
+/// 入参：
+/// - `screens`：待查找的屏幕快照集合。
+/// - `selection_id`：目标显示器的运行期选择标识。
+///
+/// 返回：
+/// - `Some(&MacScreenSnapshot)`：找到对应屏幕。
+/// - `None`：当前快照中不存在该选择标识。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；ID 缺失由调用方决定是否回退。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn screen_by_selection_id<'a>(
+    screens: &'a [MacScreenSnapshot],
+    selection_id: &str,
+) -> Option<&'a MacScreenSnapshot> {
+    screens
+        .iter()
+        .find(|screen| screen.selection_id == selection_id)
+}
+
 /// 解析 Dock 结果对应的锚点屏幕。
 ///
 /// 语义与边界：
@@ -2607,6 +2690,153 @@ fn build_floor_mode_sample(
         dock_snapshot: crate::cat_layout::DockSnapshot::side(anchor_screen.id.clone(), autohide),
         walk_bounds,
     }
+}
+
+/// 解析当前请求的显示位置模式在本轮屏幕快照下的有效值。
+///
+/// 语义与边界：
+/// - `Auto` 始终保持不变。
+/// - `Specific(selection_id)` 仅在当前快照仍能找到目标显示器时保留；否则回退为 `Auto`。
+///
+/// 入参：
+/// - `screens`：同一轮采样得到的全量屏幕快照。
+/// - `requested_mode`：调用方当前请求的显示位置模式。
+///
+/// 返回：
+/// - 当前快照下实际可用的显示位置模式。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；目标显示器缺失时自动回退到 `Auto`。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn resolve_display_location_mode(
+    screens: &[MacScreenSnapshot],
+    requested_mode: DisplayLocationMode,
+) -> DisplayLocationMode {
+    match requested_mode {
+        DisplayLocationMode::Auto => DisplayLocationMode::Auto,
+        DisplayLocationMode::Specific(selection_id) => {
+            if screen_by_selection_id(screens, &selection_id).is_some() {
+                DisplayLocationMode::Specific(selection_id)
+            } else {
+                DisplayLocationMode::Auto
+            }
+        }
+    }
+}
+
+/// 基于当前显示位置模式解析最终应使用的 Dock 采样结果。
+///
+/// 语义与边界：
+/// - `Auto` 直接复用现有 Dock 自动跟随采样结果。
+/// - `Specific(selection_id)` 且 Dock 已在该显示器上时，也复用自动采样结果。
+/// - `Specific(selection_id)` 且 Dock 在其它显示器上时，退化为目标显示器的 `Floor` 模式，
+///   令像素猫沿该显示器底边活动。
+///
+/// 入参：
+/// - `screens`：同一轮采样得到的全量屏幕快照。
+/// - `auto_sample`：默认自动跟随 Dock 的采样结果。
+/// - `display_location_mode`：当前已解析好的显示位置模式。
+///
+/// 返回：
+/// - 本轮应继续用于布局计算的统一 Dock 采样结果。
+///
+/// 错误处理与失败场景：
+/// - 若 `Specific(selection_id)` 在当前快照中找不到显示器，则退化为 `auto_sample`。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn resolve_display_location_dock_sample(
+    screens: &[MacScreenSnapshot],
+    auto_sample: &DockPlacementSample,
+    display_location_mode: DisplayLocationMode,
+) -> DockPlacementSample {
+    match display_location_mode {
+        DisplayLocationMode::Auto => auto_sample.clone(),
+        DisplayLocationMode::Specific(selection_id) => {
+            let selected_screen = match screen_by_selection_id(screens, &selection_id) {
+                Some(screen) => screen,
+                None => return auto_sample.clone(),
+            };
+            let dock_screen = screen_by_id(screens, &auto_sample.dock_snapshot.anchor_screen_id)
+                .unwrap_or(selected_screen);
+
+            if dock_screen.selection_id == selected_screen.selection_id {
+                auto_sample.clone()
+            } else {
+                build_floor_mode_sample(selected_screen, auto_sample.dock_snapshot.autohide)
+            }
+        }
+    }
+}
+
+/// 从屏幕快照构造托盘菜单使用的显示器选项列表。
+///
+/// 语义与边界：
+/// - 若显示器名称重复，会按当前快照顺序追加 `#序号` 以保证菜单文案可区分。
+/// - 仅构造 UI 展示所需信息，不保留几何字段。
+///
+/// 入参：
+/// - `screens`：同一轮采样得到的全量屏幕快照。
+///
+/// 返回：
+/// - 托盘菜单可直接消费的显示器选项列表。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；空输入返回空列表。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn display_choices_from_screens(screens: &[MacScreenSnapshot]) -> Vec<DisplayChoice> {
+    let mut totals: HashMap<&str, usize> = HashMap::new();
+    for screen in screens {
+        *totals.entry(screen.name.as_str()).or_insert(0) += 1;
+    }
+
+    let mut occurrences: HashMap<&str, usize> = HashMap::new();
+    screens
+        .iter()
+        .map(|screen| {
+            let occurrence = occurrences.entry(screen.name.as_str()).or_insert(0);
+            *occurrence += 1;
+            let label = if totals.get(screen.name.as_str()).copied().unwrap_or(0) > 1 {
+                format!("{} #{}", screen.name, *occurrence)
+            } else {
+                screen.name.clone()
+            };
+
+            DisplayChoice {
+                selection_id: screen.selection_id.clone(),
+                label,
+                is_main: screen.is_main,
+            }
+        })
+        .collect()
+}
+
+/// 返回当前 macOS 会话中的显示器菜单选项。
+///
+/// 语义与边界：
+/// - 必须在主线程调用，因为内部会访问 `NSScreen`。
+/// - 返回值仅描述当前这一刻的显示器列表，不做跨刷新缓存。
+///
+/// 返回：
+/// - 当前可用于托盘“显示位置”菜单的显示器选项列表。
+///
+/// 错误处理与失败场景：
+/// - 屏幕采样失败时返回空列表，由调用方决定是否隐藏菜单。
+///
+/// 关键副作用：
+/// - 读取 AppKit 的 `NSScreen` 信息。
+#[cfg(target_os = "macos")]
+pub(crate) fn current_display_choices() -> Vec<DisplayChoice> {
+    get_macos_screen_info()
+        .map(|screens| display_choices_from_screens(&screens))
+        .unwrap_or_default()
 }
 
 /// 依据 side Dock 朝向选择 Floor 模式的锚点屏幕。
@@ -2874,7 +3104,7 @@ fn get_dock_sample(
     screens: &[MacScreenSnapshot],
     anchor_screen: &MacScreenSnapshot,
 ) -> DockPlacementSample {
-    get_dock_sample_with_preferred_anchor(screens, anchor_screen, None)
+    get_dock_sample_for_display_location(screens, anchor_screen, None, DisplayLocationMode::Auto)
 }
 
 /// macOS: 获取 Dock 采样统一输出（Bottom/Floor），并允许注入“优先锚点屏幕”以稳定 side Dock 隐藏态回退。
@@ -2934,6 +3164,44 @@ fn get_dock_sample_with_preferred_anchor(
         dock_frame: None,
     };
     build_bottom_mode_sample(anchor_screen, &bounds, autohide)
+}
+
+/// 在默认 Dock 自动采样结果之上叠加显示位置模式。
+///
+/// 语义与边界：
+/// - 先按现有逻辑生成“跟随 Dock”的自动采样结果。
+/// - 再根据 `display_location_mode` 决定是否强制切到手动指定显示器的 floor 模式。
+/// - 若手动指定的显示器当前已消失，则自动回退到 `Auto` 并同步更新运行期状态。
+///
+/// 入参：
+/// - `screens`：当前采样到的全部屏幕快照（全局坐标）。
+/// - `anchor_screen`：默认锚定屏幕（通常是主屏）。
+/// - `preferred_anchor_screen_id`：上一轮已确认的 Dock 锚点屏幕 ID，可为空。
+/// - `display_location_mode`：当前请求的显示位置模式。
+///
+/// 返回：
+/// - 本轮最终应使用的统一 Dock 采样结果。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；当手动目标显示器缺失时，会退回 `Auto` 路径。
+///
+/// 关键副作用：
+/// - 目标显示器消失时，会把托盘中的运行期显示位置状态重置为 `Auto`。
+#[cfg(target_os = "macos")]
+fn get_dock_sample_for_display_location(
+    screens: &[MacScreenSnapshot],
+    anchor_screen: &MacScreenSnapshot,
+    preferred_anchor_screen_id: Option<&str>,
+    display_location_mode: DisplayLocationMode,
+) -> DockPlacementSample {
+    let auto_sample =
+        get_dock_sample_with_preferred_anchor(screens, anchor_screen, preferred_anchor_screen_id);
+    let resolved_mode = resolve_display_location_mode(screens, display_location_mode.clone());
+    if resolved_mode != display_location_mode {
+        crate::tray::set_display_location_mode(resolved_mode.clone());
+    }
+
+    resolve_display_location_dock_sample(screens, &auto_sample, resolved_mode)
 }
 
 /// 基于 Dock AXList 的原始几何值构造底部 Dock 边界。
@@ -3265,8 +3533,9 @@ fn build_screen_id(name: &str, frame: &crate::cat_layout::Rect, scale_factor: f3
 /// - 若没有采样到屏幕，返回 `None`。
 #[cfg(target_os = "macos")]
 fn get_macos_screen_info() -> Option<Vec<MacScreenSnapshot>> {
+    use objc2::runtime::AnyObject;
     use objc2_app_kit::NSScreen;
-    use objc2_foundation::MainThreadMarker;
+    use objc2_foundation::{MainThreadMarker, NSString};
 
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
     let screens = NSScreen::screens(mtm);
@@ -3322,9 +3591,31 @@ fn get_macos_screen_info() -> Option<Vec<MacScreenSnapshot>> {
         );
         let is_main = main_metrics.map_or(false, |main| main == metrics);
         let name = unsafe { screen.localizedName() }.to_string();
+        let selection_id = unsafe {
+            let device_description: *mut AnyObject = objc2::msg_send![&*screen, deviceDescription];
+            if device_description.is_null() {
+                build_screen_id(&name, &frame_rect, scale)
+            } else {
+                let key = NSString::from_str("NSScreenNumber");
+                let screen_number: *mut AnyObject =
+                    objc2::msg_send![device_description, objectForKey: &*key];
+                if screen_number.is_null() {
+                    build_screen_id(&name, &frame_rect, scale)
+                } else {
+                    let display_number: u32 = objc2::msg_send![screen_number, unsignedIntValue];
+                    if display_number == 0 {
+                        build_screen_id(&name, &frame_rect, scale)
+                    } else {
+                        format!("display-{display_number}")
+                    }
+                }
+            }
+        };
 
         result.push(MacScreenSnapshot {
             id: build_screen_id(&name, &frame_rect, scale),
+            selection_id,
+            name,
             frame: frame_rect,
             visible_frame: visible_rect,
             scale_factor: scale,
@@ -3653,6 +3944,8 @@ mod tests {
     ) -> MacScreenSnapshot {
         MacScreenSnapshot {
             id: build_screen_id(name, &frame, scale_factor),
+            selection_id: format!("selection-{}", build_screen_id(name, &frame, scale_factor)),
+            name: name.to_string(),
             frame,
             visible_frame: visible,
             scale_factor,
@@ -3805,6 +4098,130 @@ mod tests {
             .expect("AX geometry should still resolve to a screen");
 
         assert_eq!(bounds.anchor_screen_id, main.id);
+    }
+
+    #[test]
+    fn manual_display_mode_should_fall_back_to_auto_when_selection_disappears() {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1512.0, 982.0),
+            crate::cat_layout::Rect::new(0.0, 58.0, 1512.0, 891.0),
+            2.0,
+            true,
+        );
+        let screens = vec![main];
+
+        let mode = super::resolve_display_location_mode(
+            &screens,
+            super::DisplayLocationMode::Specific("missing-display".to_string()),
+        );
+
+        assert_eq!(mode, super::DisplayLocationMode::Auto);
+    }
+
+    #[test]
+    fn manual_display_mode_should_use_floor_layout_when_dock_is_on_other_display() {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1728.0, 1117.0),
+            crate::cat_layout::Rect::new(0.0, 25.0, 1728.0, 1070.0),
+            2.0,
+            true,
+        );
+        let external = make_screen(
+            "External",
+            crate::cat_layout::Rect::new(1728.0, 0.0, 1920.0, 1080.0),
+            crate::cat_layout::Rect::new(1728.0, 25.0, 1920.0, 1035.0),
+            1.0,
+            false,
+        );
+        let screens = vec![main.clone(), external.clone()];
+        let auto_sample = build_bottom_mode_sample(
+            &external,
+            &super::DockHorizontalBounds {
+                anchor_screen_id: external.id.clone(),
+                left: 2100.0,
+                right: 3000.0,
+                dock_frame: Some(crate::cat_layout::Rect::new(2100.0, 980.0, 900.0, 80.0)),
+            },
+            false,
+        );
+
+        let sample = super::resolve_display_location_dock_sample(
+            &screens,
+            &auto_sample,
+            super::DisplayLocationMode::Specific(main.selection_id.clone()),
+        );
+
+        assert_eq!(sample.dock_snapshot.anchor_screen_id, main.id);
+        assert_eq!(
+            sample.dock_snapshot.mode,
+            crate::cat_layout::DockPlacementMode::Floor
+        );
+        assert_eq!(sample.walk_bounds, main.visible_frame);
+    }
+
+    #[test]
+    fn manual_display_mode_should_reuse_dock_layout_when_dock_is_on_selected_display() {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1728.0, 1117.0),
+            crate::cat_layout::Rect::new(0.0, 25.0, 1728.0, 1070.0),
+            2.0,
+            true,
+        );
+        let external = make_screen(
+            "External",
+            crate::cat_layout::Rect::new(1728.0, 0.0, 1920.0, 1080.0),
+            crate::cat_layout::Rect::new(1728.0, 25.0, 1920.0, 1035.0),
+            1.0,
+            false,
+        );
+        let screens = vec![main, external.clone()];
+        let auto_sample = build_bottom_mode_sample(
+            &external,
+            &super::DockHorizontalBounds {
+                anchor_screen_id: external.id.clone(),
+                left: 2100.0,
+                right: 3000.0,
+                dock_frame: Some(crate::cat_layout::Rect::new(2100.0, 980.0, 900.0, 80.0)),
+            },
+            false,
+        );
+
+        let sample = super::resolve_display_location_dock_sample(
+            &screens,
+            &auto_sample,
+            super::DisplayLocationMode::Specific(external.selection_id.clone()),
+        );
+
+        assert_eq!(sample.dock_snapshot.anchor_screen_id, external.id);
+        assert_eq!(sample.dock_snapshot.mode, auto_sample.dock_snapshot.mode);
+        assert_eq!(sample.walk_bounds, auto_sample.walk_bounds);
+    }
+
+    #[test]
+    fn display_menu_choices_should_suffix_duplicate_names() {
+        let left = make_screen(
+            "Studio Display",
+            crate::cat_layout::Rect::new(-1440.0, 0.0, 1440.0, 900.0),
+            crate::cat_layout::Rect::new(-1440.0, 25.0, 1440.0, 850.0),
+            1.0,
+            false,
+        );
+        let right = make_screen(
+            "Studio Display",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1440.0, 900.0),
+            crate::cat_layout::Rect::new(0.0, 25.0, 1440.0, 850.0),
+            1.0,
+            true,
+        );
+
+        let choices = super::display_choices_from_screens(&[left, right]);
+
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0].label, "Studio Display #1");
+        assert_eq!(choices[1].label, "Studio Display #2");
     }
 
     #[test]
@@ -4077,6 +4494,7 @@ mod tests {
             base_y: 1092.0,
             last_poll_time: now,
             last_dock_refresh: now,
+            last_display_location_revision: 0,
             dock_autohide_probe: None,
             last_dock_autohide_probe: now,
             dock_autohide_probe_result,

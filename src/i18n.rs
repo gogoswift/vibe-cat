@@ -117,6 +117,9 @@ impl AppLanguage {
 pub enum TranslationKey {
     EventMonitor,
     Quit,
+    DisplayLocation,
+    Automatic,
+    OnlyOneDisplayDetected,
     GuiWindowTitle,
     GuiFilterLabel,
     GuiAutoScroll,
@@ -194,6 +197,16 @@ pub fn translate(language: AppLanguage, key: TranslationKey) -> &'static str {
         (AppLanguage::SimplifiedChinese, TranslationKey::EventMonitor) => "事件监控",
         (AppLanguage::English, TranslationKey::Quit) => "Quit",
         (AppLanguage::SimplifiedChinese, TranslationKey::Quit) => "退出",
+        (AppLanguage::English, TranslationKey::DisplayLocation) => "Display Location",
+        (AppLanguage::SimplifiedChinese, TranslationKey::DisplayLocation) => "显示位置",
+        (AppLanguage::English, TranslationKey::Automatic) => "Automatic",
+        (AppLanguage::SimplifiedChinese, TranslationKey::Automatic) => "自动",
+        (AppLanguage::English, TranslationKey::OnlyOneDisplayDetected) => {
+            "Only one display detected"
+        }
+        (AppLanguage::SimplifiedChinese, TranslationKey::OnlyOneDisplayDetected) => {
+            "当前仅检测到一个显示器"
+        }
         (AppLanguage::English, TranslationKey::GuiWindowTitle) => "VibeCat Event Monitor",
         (AppLanguage::SimplifiedChinese, TranslationKey::GuiWindowTitle) => "VibeCat 事件监控",
         (AppLanguage::English, TranslationKey::GuiFilterLabel) => "Filter:",

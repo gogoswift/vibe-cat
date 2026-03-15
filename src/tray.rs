@@ -17,8 +17,8 @@
 #![cfg(target_os = "macos")]
 
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use image::{DynamicImage, GenericImageView, ImageEncoder, RgbaImage};
 use objc2::msg_send;
@@ -29,7 +29,7 @@ use objc2::ClassType;
 use objc2_app_kit::{NSApplication, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem};
 use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString};
 
-use crate::cat::ClaudeState;
+use crate::cat::{ClaudeState, DisplayChoice, DisplayLocationMode};
 use crate::i18n::{self, TranslationKey};
 
 // ── 常量 ──
@@ -192,14 +192,93 @@ pub static CX_ENABLED: AtomicBool = AtomicBool::new(true);
 static MENU_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
 /// NSStatusItem 指针（用于 popUpStatusItemMenu 定位到状态栏正下方）
 static STATUS_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
+/// 菜单处理对象指针（用于动态菜单项 target 复用）
+static MENU_HANDLER_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
 /// cc 菜单项指针（用于更新勾选状态）
 static CC_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
 /// cx 菜单项指针（用于更新勾选状态）
 static CX_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
+/// 显示位置父菜单项指针（用于动态显隐与标题刷新）
+static DISPLAY_LOCATION_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
+/// 显示位置子菜单指针（用于弹出前动态重建）
+static DISPLAY_LOCATION_SUBMENU_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
 /// 事件监控菜单项指针（用于弹出菜单前刷新国际化标题）
 static GUI_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
 /// 退出菜单项指针（用于弹出菜单前刷新国际化标题）
 static QUIT_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
+/// 本次运行是否曾检测到多显示器。
+static DISPLAY_LOCATION_MENU_ACTIVATED: AtomicBool = AtomicBool::new(false);
+/// 显示位置运行时状态版本号，用于通知猫窗口立即刷新布局。
+static DISPLAY_LOCATION_REVISION: AtomicU64 = AtomicU64::new(0);
+/// 显示位置运行时状态。
+static DISPLAY_LOCATION_MODE: OnceLock<Mutex<DisplayLocationMode>> = OnceLock::new();
+
+/// 返回显示位置运行时状态的共享存储。
+///
+/// 语义与边界：
+/// - 仅在当前进程生命周期内保存，不做持久化。
+/// - 默认值固定为 `DisplayLocationMode::Auto`。
+///
+/// 返回值：
+/// - 全局唯一的运行时状态互斥锁。
+///
+/// 错误处理：
+/// - 不返回错误；初始化失败将遵循 `OnceLock` 的 panic 语义。
+fn display_location_mode_cell() -> &'static Mutex<DisplayLocationMode> {
+    DISPLAY_LOCATION_MODE.get_or_init(|| Mutex::new(DisplayLocationMode::Auto))
+}
+
+/// 读取当前生效的显示位置模式。
+///
+/// 语义与边界：
+/// - 返回值仅反映本次运行内的临时选择。
+/// - 不会访问 AppKit，也不依赖当前显示器采样结果。
+///
+/// 返回值：
+/// - 当前保存的 `DisplayLocationMode`。
+///
+/// 错误处理：
+/// - 共享状态加锁失败时保持当前实现风格并 panic。
+pub(crate) fn current_display_location_mode() -> DisplayLocationMode {
+    display_location_mode_cell().lock().unwrap().clone()
+}
+
+/// 更新当前显示位置模式，并在变更时递增刷新版本号。
+///
+/// 语义与边界：
+/// - 仅在新旧值不同的时候才递增版本号，避免无意义重摆。
+/// - 不负责校验目标显示器当前是否存在；该校验由采样路径完成。
+///
+/// 入参：
+/// - `next_mode`：新的显示位置模式。
+///
+/// 返回值：
+/// - 无。
+///
+/// 错误处理：
+/// - 共享状态加锁失败时保持当前实现风格并 panic。
+///
+/// 关键副作用：
+/// - 模式变化时会递增 `DISPLAY_LOCATION_REVISION`，通知猫窗口尽快刷新布局。
+pub(crate) fn set_display_location_mode(next_mode: DisplayLocationMode) {
+    let mut mode = display_location_mode_cell().lock().unwrap();
+    if *mode != next_mode {
+        *mode = next_mode;
+        DISPLAY_LOCATION_REVISION.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// 返回当前显示位置状态的刷新版本号。
+///
+/// 语义与边界：
+/// - 仅用于窗口刷新节流与变化检测。
+/// - 值只在本次运行内单调递增，不做持久化。
+///
+/// 返回值：
+/// - 当前显示位置状态版本号。
+pub(crate) fn display_location_revision() -> u64 {
+    DISPLAY_LOCATION_REVISION.load(Ordering::Relaxed)
+}
 
 // ── 三态状态机 ──
 
@@ -252,6 +331,7 @@ fn register_tray_handler_class() -> &'static AnyClass {
             // NSEventType: 1=leftDown, 2=leftUp, 3=rightDown, 4=rightUp
             if event_type == 3 || event_type == 4 {
                 // 右键弹出菜单前更新勾选状态与国际化标题
+                refresh_display_location_menu();
                 update_menu_check_marks();
                 update_menu_localized_titles();
                 let menu_ptr = MENU_PTR.load(Ordering::Acquire);
@@ -283,6 +363,21 @@ fn register_tray_handler_class() -> &'static AnyClass {
         CX_ENABLED.fetch_xor(true, Ordering::Relaxed);
     }
 
+    extern "C" fn select_display_location_auto(_this: &AnyObject, _cmd: Sel, _sender: &AnyObject) {
+        set_display_location_mode(DisplayLocationMode::Auto);
+    }
+
+    extern "C" fn select_display_location(_this: &AnyObject, _cmd: Sel, sender: &AnyObject) {
+        unsafe {
+            let represented: *mut AnyObject = msg_send![sender, representedObject];
+            if represented.is_null() {
+                return;
+            }
+            let selection_id = (&*(represented as *const NSString)).to_string();
+            set_display_location_mode(DisplayLocationMode::Specific(selection_id));
+        }
+    }
+
     extern "C" fn open_gui(_this: &AnyObject, _cmd: Sel, _sender: &AnyObject) {
         let exe = std::env::current_exe().unwrap_or_default();
         let _ = std::process::Command::new(exe).arg("gui").spawn();
@@ -304,6 +399,14 @@ fn register_tray_handler_class() -> &'static AnyClass {
             builder.add_method(sel!(trayClicked:), tray_clicked as extern "C" fn(_, _, _));
             builder.add_method(sel!(toggleCC:), toggle_cc as extern "C" fn(_, _, _));
             builder.add_method(sel!(toggleCX:), toggle_cx as extern "C" fn(_, _, _));
+            builder.add_method(
+                sel!(selectDisplayLocationAuto:),
+                select_display_location_auto as extern "C" fn(_, _, _),
+            );
+            builder.add_method(
+                sel!(selectDisplayLocation:),
+                select_display_location as extern "C" fn(_, _, _),
+            );
             builder.add_method(sel!(openGui:), open_gui as extern "C" fn(_, _, _));
             builder.add_method(sel!(quitApp:), quit_app as extern "C" fn(_, _, _));
         }
@@ -372,6 +475,12 @@ fn localized_menu_title(key: TranslationKey) -> &'static str {
 /// - 会直接修改 Cocoa 菜单项标题，并影响下一次托盘菜单显示内容。
 fn update_menu_localized_titles() {
     unsafe {
+        let display_location_ptr = DISPLAY_LOCATION_MENU_ITEM_PTR.load(Ordering::Acquire);
+        if !display_location_ptr.is_null() {
+            let title = NSString::from_str(localized_menu_title(TranslationKey::DisplayLocation));
+            let _: () = msg_send![display_location_ptr, setTitle: &*title];
+        }
+
         let gui_ptr = GUI_MENU_ITEM_PTR.load(Ordering::Acquire);
         if !gui_ptr.is_null() {
             let title = NSString::from_str(localized_menu_title(TranslationKey::EventMonitor));
@@ -382,6 +491,155 @@ fn update_menu_localized_titles() {
         if !quit_ptr.is_null() {
             let title = NSString::from_str(localized_menu_title(TranslationKey::Quit));
             let _: () = msg_send![quit_ptr, setTitle: &*title];
+        }
+    }
+}
+
+/// 判断“显示位置”菜单在本次运行中是否应该可见。
+///
+/// 语义与边界：
+/// - 当前检测到多个显示器时立即可见。
+/// - 只要本次运行中曾出现过多显示器，之后即使退回单显示器也保持可见。
+///
+/// 入参：
+/// - `has_seen_multiple_displays`: 本次运行是否曾经检测到多个显示器。
+/// - `display_count`: 当前检测到的显示器数量。
+///
+/// 返回值：
+/// - `true` 表示应显示“显示位置”菜单。
+/// - `false` 表示应隐藏该菜单。
+///
+/// 错误处理：
+/// - 不返回错误；调用方需保证 `display_count` 来自同一轮采样。
+fn should_show_display_location_menu(
+    has_seen_multiple_displays: bool,
+    display_count: usize,
+) -> bool {
+    has_seen_multiple_displays || display_count > 1
+}
+
+/// 依据当前显示器列表把显示位置模式规范化为可用值。
+///
+/// 语义与边界：
+/// - 若当前模式为 `Specific(selection_id)` 且该显示器已不存在，则自动回退到 `Auto`。
+/// - 回退时会通过 `set_display_location_mode` 同步更新全局状态与刷新版本号。
+///
+/// 入参：
+/// - `display_choices`：当前会话可用的显示器选项列表。
+///
+/// 返回值：
+/// - 在当前显示器快照下实际可用的显示位置模式。
+///
+/// 错误处理：
+/// - 不返回错误；显示器缺失时自动回退。
+fn normalized_display_location_mode(display_choices: &[DisplayChoice]) -> DisplayLocationMode {
+    match current_display_location_mode() {
+        DisplayLocationMode::Auto => DisplayLocationMode::Auto,
+        DisplayLocationMode::Specific(selection_id) => {
+            if display_choices
+                .iter()
+                .any(|choice| choice.selection_id == selection_id)
+            {
+                DisplayLocationMode::Specific(selection_id)
+            } else {
+                set_display_location_mode(DisplayLocationMode::Auto);
+                DisplayLocationMode::Auto
+            }
+        }
+    }
+}
+
+/// 在托盘菜单弹出前刷新“显示位置”子菜单。
+///
+/// 语义与边界：
+/// - 子菜单内容基于当前 `NSScreen` 快照实时重建。
+/// - 若本次运行从未见过多显示器且当前仍为单显示器，则父菜单保持隐藏。
+/// - 一旦本次运行曾经见过多显示器，父菜单就保持可见；退回单显示器时显示说明项。
+///
+/// 错误处理：
+/// - 如果父菜单、子菜单或菜单处理对象尚未初始化，则静默跳过。
+///
+/// 关键副作用：
+/// - 会读当前显示器列表、重建 Cocoa 子菜单，并可能把缺失的手动选择回退到 `Auto`。
+fn refresh_display_location_menu() {
+    let display_choices = crate::cat::current_display_choices();
+    let display_count = display_choices.len();
+    if display_count > 1 {
+        DISPLAY_LOCATION_MENU_ACTIVATED.store(true, Ordering::Relaxed);
+    }
+    let should_show = should_show_display_location_menu(
+        DISPLAY_LOCATION_MENU_ACTIVATED.load(Ordering::Relaxed),
+        display_count,
+    );
+    let active_mode = normalized_display_location_mode(&display_choices);
+
+    unsafe {
+        let parent_ptr = DISPLAY_LOCATION_MENU_ITEM_PTR.load(Ordering::Acquire);
+        let submenu_ptr = DISPLAY_LOCATION_SUBMENU_PTR.load(Ordering::Acquire);
+        let handler_ptr = MENU_HANDLER_PTR.load(Ordering::Acquire);
+        if parent_ptr.is_null() || submenu_ptr.is_null() || handler_ptr.is_null() {
+            return;
+        }
+
+        let _: () = msg_send![parent_ptr, setHidden: !should_show];
+        if !should_show {
+            return;
+        }
+
+        let _: () = msg_send![submenu_ptr, removeAllItems];
+        let mtm = MainThreadMarker::new_unchecked();
+
+        let auto_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+            mtm.alloc(),
+            &NSString::from_str(localized_menu_title(TranslationKey::Automatic)),
+            Some(sel!(selectDisplayLocationAuto:)),
+            &NSString::from_str(""),
+        );
+        let _: () = msg_send![&*auto_item, setTarget: handler_ptr];
+        let auto_state: isize = if active_mode == DisplayLocationMode::Auto {
+            1
+        } else {
+            0
+        };
+        let _: () = msg_send![&*auto_item, setState: auto_state];
+        let _: () = msg_send![submenu_ptr, addItem: &*auto_item];
+        std::mem::forget(auto_item);
+
+        if display_count > 1 {
+            let separator = NSMenuItem::separatorItem(mtm);
+            let _: () = msg_send![submenu_ptr, addItem: &*separator];
+            std::mem::forget(separator);
+
+            for choice in &display_choices {
+                let item = NSMenuItem::initWithTitle_action_keyEquivalent(
+                    mtm.alloc(),
+                    &NSString::from_str(&choice.label),
+                    Some(sel!(selectDisplayLocation:)),
+                    &NSString::from_str(""),
+                );
+                let _: () = msg_send![&*item, setTarget: handler_ptr];
+                let represented = NSString::from_str(&choice.selection_id);
+                let _: () = msg_send![&*item, setRepresentedObject: &*represented];
+                let state: isize =
+                    if active_mode == DisplayLocationMode::Specific(choice.selection_id.clone()) {
+                        1
+                    } else {
+                        0
+                    };
+                let _: () = msg_send![&*item, setState: state];
+                let _: () = msg_send![submenu_ptr, addItem: &*item];
+                std::mem::forget(item);
+            }
+        } else {
+            let info_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+                mtm.alloc(),
+                &NSString::from_str(localized_menu_title(TranslationKey::OnlyOneDisplayDetected)),
+                None,
+                &NSString::from_str(""),
+            );
+            let _: () = msg_send![&*info_item, setEnabled: false];
+            let _: () = msg_send![submenu_ptr, addItem: &*info_item];
+            std::mem::forget(info_item);
         }
     }
 }
@@ -528,6 +786,7 @@ pub fn create_status_item(nsimages: &[Vec<Retained<NSImage>>]) -> Retained<NSSta
         let handler_class = register_tray_handler_class();
         let menu_handler: *mut AnyObject = msg_send![handler_class, new];
         let _: *mut AnyObject = msg_send![menu_handler, retain];
+        MENU_HANDLER_PTR.store(menu_handler, Ordering::Release);
 
         // cc 开关
         let cc_item = NSMenuItem::initWithTitle_action_keyEquivalent(
@@ -554,6 +813,28 @@ pub fn create_status_item(nsimages: &[Vec<Retained<NSImage>>]) -> Retained<NSSta
         menu.addItem(&cx_item);
         CX_MENU_ITEM_PTR.store(&*cx_item as *const _ as *mut AnyObject, Ordering::Release);
         std::mem::forget(cx_item);
+
+        // 显示位置（默认隐藏，弹出前按当前显示器状态动态刷新）
+        let display_location_submenu = NSMenu::initWithTitle(mtm.alloc(), &NSString::from_str(""));
+        let display_location_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+            mtm.alloc(),
+            &NSString::from_str(localized_menu_title(TranslationKey::DisplayLocation)),
+            None,
+            &NSString::from_str(""),
+        );
+        let _: () = msg_send![&*display_location_item, setSubmenu: &*display_location_submenu];
+        let _: () = msg_send![&*display_location_item, setHidden: true];
+        menu.addItem(&display_location_item);
+        DISPLAY_LOCATION_MENU_ITEM_PTR.store(
+            &*display_location_item as *const _ as *mut AnyObject,
+            Ordering::Release,
+        );
+        DISPLAY_LOCATION_SUBMENU_PTR.store(
+            &*display_location_submenu as *const _ as *mut AnyObject,
+            Ordering::Release,
+        );
+        std::mem::forget(display_location_submenu);
+        std::mem::forget(display_location_item);
 
         // 分隔线
         let sep1 = NSMenuItem::separatorItem(mtm);
@@ -653,6 +934,16 @@ pub fn sync_tray_state(state: &mut TrayAnimState, claude_state: ClaudeState) {
                 state.current_anim_duration = dur;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn display_location_menu_visibility_should_stay_enabled_after_multidisplay_seen() {
+        assert!(!super::should_show_display_location_menu(false, 1));
+        assert!(super::should_show_display_location_menu(false, 2));
+        assert!(super::should_show_display_location_menu(true, 1));
     }
 }
 
