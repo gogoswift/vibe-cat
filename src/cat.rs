@@ -405,9 +405,26 @@ fn extract_cropped_frame(
 /// 后台线程传回的 Dock 边界数据
 #[derive(Clone)]
 struct DockBoundsResult {
+    anchor_screen_id: String,
     dock_left: f32,
     dock_right: f32,
     base_y: f32,
+}
+
+/// Dock 水平边界与锚点屏幕。
+///
+/// 语义与边界：
+/// - `left`/`right` 是全局 point 坐标。
+/// - `anchor_screen_id` 必须来自同一轮屏幕采样快照。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug)]
+struct DockHorizontalBounds {
+    anchor_screen_id: String,
+    left: f32,
+    right: f32,
 }
 
 /// macOS 屏幕快照（全局坐标）。
@@ -893,14 +910,17 @@ impl UnifiedCatApp {
             #[cfg(target_os = "macos")]
             {
                 if let Some(screens) = screen_info {
-                    if let Some(anchor_screen) = main_screen_snapshot(&screens) {
-                        let (dl, dr) = get_dock_bounds(&screens, anchor_screen);
-                        if dr > dl {
+                    if let Some(fallback_screen) = main_screen_snapshot(&screens) {
+                        let dock_bounds = get_dock_bounds(&screens, fallback_screen);
+                        if dock_bounds.right > dock_bounds.left {
+                            let dock_screen =
+                                resolve_dock_anchor_screen(&screens, fallback_screen, &dock_bounds);
                             let mut result = result_arc.lock().unwrap();
                             *result = Some(DockBoundsResult {
-                                dock_left: dl,
-                                dock_right: dr,
-                                base_y: legacy_visible_bottom(anchor_screen),
+                                anchor_screen_id: dock_screen.id.clone(),
+                                dock_left: dock_bounds.left,
+                                dock_right: dock_bounds.right,
+                                base_y: legacy_visible_bottom(dock_screen),
                             });
                         }
                     }
@@ -919,6 +939,7 @@ impl UnifiedCatApp {
         };
         if let Some(bounds) = result {
             let old_width = self.window_width;
+            let _anchor_screen_id = &bounds.anchor_screen_id;
             self.dock_left = bounds.dock_left;
             self.dock_right = bounds.dock_right;
             self.window_width = bounds.dock_right - bounds.dock_left;
@@ -1780,6 +1801,51 @@ fn main_screen_snapshot(screens: &[MacScreenSnapshot]) -> Option<&MacScreenSnaps
     })
 }
 
+/// 按屏幕 ID 查找对应快照。
+///
+/// 语义与边界：
+/// - 仅在同一轮快照数组中查找，不跨轮次缓存。
+///
+/// 入参：
+/// - `screens`：待查找的屏幕快照集合。
+/// - `screen_id`：目标屏幕标识。
+///
+/// 返回：
+/// - `Some(&MacScreenSnapshot)`：找到对应屏幕。
+/// - `None`：当前快照中不存在该 ID。
+#[cfg(target_os = "macos")]
+fn screen_by_id<'a>(screens: &'a [MacScreenSnapshot], screen_id: &str) -> Option<&'a MacScreenSnapshot> {
+    screens.iter().find(|screen| screen.id == screen_id)
+}
+
+/// 解析 Dock 结果对应的锚点屏幕。
+///
+/// 语义与边界：
+/// - 优先使用 `dock_bounds.anchor_screen_id` 命中的屏幕，确保 Dock 几何与基线来自同一块屏。
+/// - 若当前快照找不到该 ID，则回退到调用方给定的 `fallback_screen`。
+///
+/// 入参：
+/// - `screens`：同一轮采样得到的屏幕快照集合。
+/// - `fallback_screen`：兜底屏幕（通常为主屏）。
+/// - `dock_bounds`：Dock 水平边界及其锚点屏幕 ID。
+///
+/// 返回：
+/// - 与本次 Dock 结果一致的屏幕快照引用；找不到锚点时返回 `fallback_screen`。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；ID 未命中时采用兜底策略，避免刷新路径中断。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn resolve_dock_anchor_screen<'a>(
+    screens: &'a [MacScreenSnapshot],
+    fallback_screen: &'a MacScreenSnapshot,
+    dock_bounds: &DockHorizontalBounds,
+) -> &'a MacScreenSnapshot {
+    screen_by_id(screens, &dock_bounds.anchor_screen_id).unwrap_or(fallback_screen)
+}
+
 /// 将 `visible_frame` 转换为当前窗口使用的“离屏幕顶部距离”语义。
 ///
 /// 语义与边界：
@@ -1803,12 +1869,12 @@ fn legacy_visible_bottom(screen: &MacScreenSnapshot) -> f32 {
 /// - `anchor_screen`：默认锚定屏幕（通常是主屏）。
 ///
 /// 返回：
-/// - `(left, right)`：Dock 水平边界（全局坐标）。
+/// - `DockHorizontalBounds`：Dock 水平边界及其所属屏幕 ID。
 ///
 /// 错误处理与失败场景：
 /// - 本函数内部不返回错误；若 AX 不可用，会自动退化到估算路径。
 #[cfg(target_os = "macos")]
-fn get_dock_bounds(screens: &[MacScreenSnapshot], anchor_screen: &MacScreenSnapshot) -> (f32, f32) {
+fn get_dock_bounds(screens: &[MacScreenSnapshot], anchor_screen: &MacScreenSnapshot) -> DockHorizontalBounds {
     // Dock 不在底部时，窗口铺满锚定屏幕宽度（保持现有 floor 行为）
     if let Ok(output) = std::process::Command::new("defaults")
         .args(&["read", "com.apple.dock", "orientation"])
@@ -1816,27 +1882,33 @@ fn get_dock_bounds(screens: &[MacScreenSnapshot], anchor_screen: &MacScreenSnaps
     {
         let orientation = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if orientation == "left" || orientation == "right" {
-            return (
-                anchor_screen.frame.x,
-                anchor_screen.frame.x + anchor_screen.frame.width,
-            );
+            return DockHorizontalBounds {
+                anchor_screen_id: anchor_screen.id.clone(),
+                left: anchor_screen.frame.x,
+                right: anchor_screen.frame.x + anchor_screen.frame.width,
+            };
         }
     }
 
     // 优先尝试 Accessibility API
-    if let Some((left, right)) = get_dock_bounds_ax(screens) {
-        return (left, right);
+    if let Some(bounds) = get_dock_bounds_ax(screens) {
+        return bounds;
     }
 
     // Fallback: 估算
-    get_dock_bounds_estimate(anchor_screen.frame.x, anchor_screen.frame.width)
+    let (left, right) = get_dock_bounds_estimate(anchor_screen.frame.x, anchor_screen.frame.width);
+    DockHorizontalBounds {
+        anchor_screen_id: anchor_screen.id.clone(),
+        left,
+        right,
+    }
 }
 
 /// 通过 Accessibility API 直接读取 Dock 的 AXList 元素边界 (精确方法)
 ///
 /// 权限状态由 `check_ax_permission` 在启动时一次性检查并缓存
 #[cfg(target_os = "macos")]
-fn get_dock_bounds_ax(screens: &[MacScreenSnapshot]) -> Option<(f32, f32)> {
+fn get_dock_bounds_ax(screens: &[MacScreenSnapshot]) -> Option<DockHorizontalBounds> {
     use std::ffi::c_void;
     use std::process::Command;
     use std::ptr;
@@ -1950,7 +2022,7 @@ fn get_dock_bounds_ax(screens: &[MacScreenSnapshot]) -> Option<(f32, f32)> {
         }
 
         let count = CFArrayGetCount(children);
-        let mut result: Option<(f32, f32)> = None;
+        let mut result: Option<DockHorizontalBounds> = None;
 
         for i in 0..count {
             let child = CFArrayGetValueAtIndex(children, i);
@@ -2006,7 +2078,11 @@ fn get_dock_bounds_ax(screens: &[MacScreenSnapshot]) -> Option<(f32, f32)> {
                 let screen_left = anchor_screen.frame.x;
                 let screen_right = anchor_screen.frame.x + anchor_screen.frame.width;
                 if right > left && left >= screen_left && right <= screen_right {
-                    result = Some((left, right));
+                    result = Some(DockHorizontalBounds {
+                        anchor_screen_id: anchor_screen.id.clone(),
+                        left,
+                        right,
+                    });
                 }
             }
             break;
@@ -2125,20 +2201,18 @@ fn get_dock_bounds_estimate(screen_left: f32, screen_w: f32) -> (f32, f32) {
 ///
 /// 语义与边界：
 /// - 标识由名称与几何信息拼接而成，避免依赖额外系统字段。
+/// - `visible_frame` 不参与 ID 计算，避免 Dock 自动隐藏等场景导致同一屏幕 ID 抖动。
 /// - 仅用于同一次运行中的屏幕匹配，不承诺跨设备长期稳定。
 #[cfg(target_os = "macos")]
-fn build_screen_id(name: &str, frame: &crate::cat_layout::Rect, visible: &crate::cat_layout::Rect) -> String {
+fn build_screen_id(name: &str, frame: &crate::cat_layout::Rect, scale_factor: f32) -> String {
     format!(
-        "{}|{:.1},{:.1},{:.1},{:.1}|{:.1},{:.1},{:.1},{:.1}",
+        "{}|{:.1},{:.1},{:.1},{:.1}|{:.2}",
         name,
         frame.x,
         frame.y,
         frame.width,
         frame.height,
-        visible.x,
-        visible.y,
-        visible.width,
-        visible.height
+        scale_factor
     )
 }
 
@@ -2209,7 +2283,7 @@ fn get_macos_screen_info() -> Option<Vec<MacScreenSnapshot>> {
         let name = unsafe { screen.localizedName() }.to_string();
 
         result.push(MacScreenSnapshot {
-            id: build_screen_id(&name, &frame_rect, &visible_rect),
+            id: build_screen_id(&name, &frame_rect, scale),
             frame: frame_rect,
             visible_frame: visible_rect,
             scale_factor: scale,
@@ -2321,13 +2395,15 @@ pub fn run_cat() {
     #[cfg(target_os = "macos")]
     let (initial_pos, dock_left, dock_right, visible_bottom) = {
         if let Some(screens) = get_macos_screen_info() {
-            if let Some(anchor_screen) = main_screen_snapshot(&screens) {
-                let vis_bottom = legacy_visible_bottom(anchor_screen);
-                let (dl, dr) = get_dock_bounds(&screens, anchor_screen);
+            if let Some(fallback_screen) = main_screen_snapshot(&screens) {
+                let dock_bounds = get_dock_bounds(&screens, fallback_screen);
+                let dock_screen =
+                    resolve_dock_anchor_screen(&screens, fallback_screen, &dock_bounds);
+                let vis_bottom = legacy_visible_bottom(dock_screen);
                 let window_height = CELL_SIZE as f32 * SCALE + 22.0;
-                let x = dl;
+                let x = dock_bounds.left;
                 let y = vis_bottom - window_height;
-                ([x, y], dl, dr, vis_bottom)
+                ([x, y], dock_bounds.left, dock_bounds.right, vis_bottom)
             } else {
                 ([200.0, 600.0], 200.0, 1200.0, 800.0)
             }
@@ -2364,4 +2440,75 @@ pub fn run_cat() {
         Box::new(move |cc| Ok(Box::new(UnifiedCatApp::new(&cc.egui_ctx, dl, dr, vb)))),
     )
     .expect("Failed to start cat window");
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::{
+        build_screen_id, legacy_visible_bottom, main_screen_snapshot, resolve_dock_anchor_screen,
+        DockHorizontalBounds, MacScreenSnapshot,
+    };
+
+    fn make_screen(
+        name: &str,
+        frame: crate::cat_layout::Rect,
+        visible: crate::cat_layout::Rect,
+        scale_factor: f32,
+        is_main: bool,
+    ) -> MacScreenSnapshot {
+        MacScreenSnapshot {
+            id: build_screen_id(name, &frame, scale_factor),
+            frame,
+            visible_frame: visible,
+            scale_factor,
+            is_main,
+        }
+    }
+
+    #[test]
+    fn build_screen_id_stays_stable_when_visible_frame_changes() {
+        let frame = crate::cat_layout::Rect::new(0.0, 0.0, 1728.0, 1117.0);
+        let visible_a = crate::cat_layout::Rect::new(0.0, 25.0, 1728.0, 1070.0);
+        let visible_b = crate::cat_layout::Rect::new(0.0, 55.0, 1728.0, 1040.0);
+
+        let screen_a = make_screen("Built-in Retina", frame.clone(), visible_a, 2.0, true);
+        let screen_b = make_screen("Built-in Retina", frame, visible_b, 2.0, true);
+        assert_eq!(screen_a.id, screen_b.id);
+    }
+
+    #[test]
+    fn dock_anchor_base_y_should_match_anchor_screen() {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1728.0, 1117.0),
+            crate::cat_layout::Rect::new(0.0, 25.0, 1728.0, 1070.0),
+            2.0,
+            true,
+        );
+        let external = make_screen(
+            "External",
+            crate::cat_layout::Rect::new(1728.0, 0.0, 1920.0, 1080.0),
+            crate::cat_layout::Rect::new(1728.0, 40.0, 1920.0, 1040.0),
+            1.0,
+            false,
+        );
+        let screens = vec![main, external.clone()];
+
+        let fallback_main = main_screen_snapshot(&screens).expect("main screen should exist");
+        let dock_bounds = DockHorizontalBounds {
+            anchor_screen_id: external.id.clone(),
+            left: 2140.0,
+            right: 3040.0,
+        };
+        let dock_screen = resolve_dock_anchor_screen(&screens, fallback_main, &dock_bounds);
+
+        assert_eq!(
+            legacy_visible_bottom(&external),
+            legacy_visible_bottom(dock_screen)
+        );
+        assert_ne!(
+            legacy_visible_bottom(fallback_main),
+            legacy_visible_bottom(dock_screen)
+        );
+    }
 }
