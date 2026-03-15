@@ -1,10 +1,18 @@
-//! macOS 状态栏托盘图标 — 动画猫精灵
+//! macOS 状态栏托盘图标与菜单。
 //!
-//! 从同一精灵图提取帧，预创建 NSImage，在 eframe update() 中
-//! 每 250ms 推进动画帧并更新图标。
+//! 职责与边界：
+//! - 负责从精灵图预创建托盘动画帧，并在运行时更新状态栏图标。
+//! - 负责处理托盘左键/右键交互、菜单勾选状态与少量菜单文案刷新。
+//! - 不负责窗口业务状态计算；具体猫状态由 `crate::cat` 驱动。
 //!
-//! 左键点击：切换桌面猫显示/隐藏
-//! 右键点击：弹出"退出"菜单
+//! 关键副作用：
+//! - 读写 macOS `NSStatusItem`、`NSMenu`、`NSMenuItem` 等 Cocoa 对象。
+//! - 左键会切换应用窗口可见性，右键会弹出托盘菜单。
+//! - 菜单弹出前会读取当前国际化语言并刷新受支持菜单项标题。
+//!
+//! 关键依赖与约束：
+//! - 仅在 macOS 生效，依赖 `objc2` / `objc2-app-kit` 与主线程 UI 约束。
+//! - 托盘菜单对象在应用生命周期内常驻，因此通过全局指针缓存少量菜单项引用。
 
 #![cfg(target_os = "macos")]
 
@@ -22,6 +30,7 @@ use objc2_app_kit::{NSApplication, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSS
 use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString};
 
 use crate::cat::ClaudeState;
+use crate::i18n::{self, TranslationKey};
 
 // ── 常量 ──
 
@@ -187,6 +196,10 @@ static STATUS_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
 static CC_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
 /// cx 菜单项指针（用于更新勾选状态）
 static CX_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
+/// 事件监控菜单项指针（用于弹出菜单前刷新国际化标题）
+static GUI_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
+/// 退出菜单项指针（用于弹出菜单前刷新国际化标题）
+static QUIT_MENU_ITEM_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
 
 // ── 三态状态机 ──
 
@@ -238,8 +251,9 @@ fn register_tray_handler_class() -> &'static AnyClass {
 
             // NSEventType: 1=leftDown, 2=leftUp, 3=rightDown, 4=rightUp
             if event_type == 3 || event_type == 4 {
-                // 右键弹出菜单前更新勾选状态
+                // 右键弹出菜单前更新勾选状态与国际化标题
                 update_menu_check_marks();
+                update_menu_localized_titles();
                 let menu_ptr = MENU_PTR.load(Ordering::Acquire);
                 let item_ptr = STATUS_ITEM_PTR.load(Ordering::Acquire);
                 if !menu_ptr.is_null() && !item_ptr.is_null() {
@@ -297,7 +311,16 @@ fn register_tray_handler_class() -> &'static AnyClass {
     })
 }
 
-/// 弹出菜单前更新 cc/cx 菜单项的勾选状态
+/// 弹出菜单前刷新 cc/cx 菜单项的勾选状态。
+///
+/// 语义与边界：
+/// - 仅根据当前原子开关同步勾选状态，不负责创建菜单项或处理点击事件。
+///
+/// 错误处理：
+/// - 若菜单项尚未初始化或指针为空，则静默跳过。
+///
+/// 关键副作用：
+/// - 会直接写入已有 `NSMenuItem` 的勾选状态。
 fn update_menu_check_marks() {
     unsafe {
         let cc_ptr = CC_MENU_ITEM_PTR.load(Ordering::Acquire);
@@ -318,6 +341,47 @@ fn update_menu_check_marks() {
                 0
             };
             let _: () = msg_send![cx_ptr, setState: state];
+        }
+    }
+}
+
+/// 返回指定托盘菜单 key 在当前生效语言下的标题。
+///
+/// 入参：
+/// - `key`: 托盘菜单对应的稳定翻译 key。
+///
+/// 返回值：
+/// - 当前语言下应显示的静态菜单标题。
+///
+/// 错误处理：
+/// - 不会失败；语言解析失败时 `crate::i18n` 会自动回退英文。
+fn localized_menu_title(key: TranslationKey) -> &'static str {
+    i18n::translate(i18n::current_language(), key)
+}
+
+/// 为已创建的托盘菜单项刷新国际化标题。
+///
+/// 语义与边界：
+/// - 仅更新当前已经缓存了指针的菜单项标题，不重建菜单结构。
+/// - 该函数用于为未来“手动切换语言”预留刷新能力。
+///
+/// 错误处理：
+/// - 如果菜单项尚未初始化、指针为空或标题对象无法创建，则静默跳过当前项。
+///
+/// 关键副作用：
+/// - 会直接修改 Cocoa 菜单项标题，并影响下一次托盘菜单显示内容。
+fn update_menu_localized_titles() {
+    unsafe {
+        let gui_ptr = GUI_MENU_ITEM_PTR.load(Ordering::Acquire);
+        if !gui_ptr.is_null() {
+            let title = NSString::from_str(localized_menu_title(TranslationKey::EventMonitor));
+            let _: () = msg_send![gui_ptr, setTitle: &*title];
+        }
+
+        let quit_ptr = QUIT_MENU_ITEM_PTR.load(Ordering::Acquire);
+        if !quit_ptr.is_null() {
+            let title = NSString::from_str(localized_menu_title(TranslationKey::Quit));
+            let _: () = msg_send![quit_ptr, setTitle: &*title];
         }
     }
 }
@@ -413,8 +477,21 @@ pub fn create_tray_nsimages(png_frames: &[Vec<Vec<u8>>]) -> Vec<Vec<Retained<NSI
 
 // ── NSStatusBar 创建 ──
 
-/// 创建 NSStatusItem，设置左键/右键点击处理
-/// 左键：切换猫可见性  右键：弹出"退出"菜单
+/// 创建并初始化托盘 `NSStatusItem`。
+///
+/// 入参：
+/// - `nsimages`: 预先解码好的托盘动画帧，按动画索引和帧索引组织；必须至少包含睡眠动画首帧。
+///
+/// 返回值：
+/// - 已完成按钮、菜单与点击处理绑定的 `NSStatusItem`。
+///
+/// 错误处理：
+/// - 当前实现不返回 `Result`；若关键 Cocoa 调用失败，将遵循底层绑定行为并可能直接 panic。
+///
+/// 关键副作用：
+/// - 在主线程创建系统托盘图标与右键菜单。
+/// - 会缓存若干菜单项指针，用于后续刷新勾选状态和国际化标题。
+/// - 左键点击会切换猫窗口可见性，右键点击会弹出托盘菜单。
 pub fn create_status_item(nsimages: &[Vec<Retained<NSImage>>]) -> Retained<NSStatusItem> {
     unsafe {
         let mtm = MainThreadMarker::new_unchecked();
@@ -485,12 +562,14 @@ pub fn create_status_item(nsimages: &[Vec<Retained<NSImage>>]) -> Retained<NSSta
         // 事件监控
         let gui_item = NSMenuItem::initWithTitle_action_keyEquivalent(
             mtm.alloc(),
-            &NSString::from_str("事件监控"),
+            &NSString::from_str(localized_menu_title(TranslationKey::EventMonitor)),
             Some(sel!(openGui:)),
             &NSString::from_str("e"),
         );
         let _: () = msg_send![&*gui_item, setTarget: menu_handler];
         menu.addItem(&gui_item);
+        GUI_MENU_ITEM_PTR.store(&*gui_item as *const _ as *mut AnyObject, Ordering::Release);
+        std::mem::forget(gui_item);
 
         // 分隔线
         let sep2 = NSMenuItem::separatorItem(mtm);
@@ -499,12 +578,14 @@ pub fn create_status_item(nsimages: &[Vec<Retained<NSImage>>]) -> Retained<NSSta
         // 退出
         let quit_item = NSMenuItem::initWithTitle_action_keyEquivalent(
             mtm.alloc(),
-            &NSString::from_str("退出"),
+            &NSString::from_str(localized_menu_title(TranslationKey::Quit)),
             Some(sel!(quitApp:)),
             &NSString::from_str(""),
         );
         let _: () = msg_send![&*quit_item, setTarget: menu_handler];
         menu.addItem(&quit_item);
+        QUIT_MENU_ITEM_PTR.store(&*quit_item as *const _ as *mut AnyObject, Ordering::Release);
+        std::mem::forget(quit_item);
 
         // 保存 menu 指针（泄漏 Retained 防止释放）
         let menu_raw = &*menu as *const _ as *mut AnyObject;

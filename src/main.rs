@@ -19,6 +19,7 @@ mod cat;
 mod cat_layout;
 mod events;
 mod gui;
+mod i18n;
 mod installer;
 mod logger;
 mod server;
@@ -28,9 +29,14 @@ mod tray;
 
 use std::io::Read;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use colored::*;
 
+/// 命令行入口参数。
+///
+/// 职责与边界：
+/// - 仅描述顶层 CLI 结构，并把实际命令解析委托给 clap。
+/// - 不负责根据语言动态改写帮助文案；该行为由运行时 builder 完成。
 #[derive(Parser)]
 #[command(
     name = "claude-hook-monitor",
@@ -42,6 +48,11 @@ struct Cli {
     command: Option<Commands>,
 }
 
+/// 应用支持的子命令集合。
+///
+/// 职责与边界：
+/// - 定义命令名、参数结构和默认解析规则。
+/// - 不负责命令帮助的国际化文案；帮助文本会在运行时统一覆盖。
 #[derive(Subcommand)]
 enum Commands {
     /// 监听 hook 事件（被 Claude Code 调用，从 stdin 读取 JSON）
@@ -106,6 +117,183 @@ impl Commands {
     }
 }
 
+/// 构建当前语言下的 clap 命令定义。
+///
+/// 入参：
+/// - `language`: 当前应显示的帮助文案语言。
+///
+/// 返回值：
+/// - 已经覆盖根命令、子命令和参数帮助文本的 `clap::Command`。
+///
+/// 错误处理：
+/// - 不返回 `Result`；命令结构异常会在 clap 内部后续使用时暴露。
+///
+/// 关键副作用：
+/// - 无直接副作用；仅构建命令定义对象。
+fn build_localized_cli_command(language: i18n::AppLanguage) -> clap::Command {
+    Cli::command()
+        .about(i18n::translate(language, i18n::TranslationKey::CliAppAbout))
+        .long_about(i18n::translate(language, i18n::TranslationKey::CliAppAbout))
+        .mut_subcommand("listen", |subcommand| {
+            subcommand
+                .about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliListenAbout,
+                ))
+                .long_about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliListenAbout,
+                ))
+        })
+        .mut_subcommand("install", |subcommand| {
+            subcommand
+                .about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliInstallAbout,
+                ))
+                .long_about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliInstallAbout,
+                ))
+                .mut_arg("scope", |arg| {
+                    arg.help(i18n::translate(
+                        language,
+                        i18n::TranslationKey::CliInstallScopeHelp,
+                    ))
+                    .long_help(i18n::translate(
+                        language,
+                        i18n::TranslationKey::CliInstallScopeHelp,
+                    ))
+                })
+        })
+        .mut_subcommand("tail", |subcommand| {
+            subcommand
+                .about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliTailAbout,
+                ))
+                .long_about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliTailAbout,
+                ))
+                .mut_arg("filter", |arg| {
+                    arg.help(i18n::translate(
+                        language,
+                        i18n::TranslationKey::CliFilterHelp,
+                    ))
+                    .long_help(i18n::translate(
+                        language,
+                        i18n::TranslationKey::CliFilterHelp,
+                    ))
+                })
+        })
+        .mut_subcommand("status", |subcommand| {
+            subcommand
+                .about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliStatusAbout,
+                ))
+                .long_about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliStatusAbout,
+                ))
+        })
+        .mut_subcommand("gui", |subcommand| {
+            subcommand
+                .about(i18n::translate(language, i18n::TranslationKey::CliGuiAbout))
+                .long_about(i18n::translate(language, i18n::TranslationKey::CliGuiAbout))
+                .mut_arg("filter", |arg| {
+                    arg.help(i18n::translate(
+                        language,
+                        i18n::TranslationKey::CliFilterHelp,
+                    ))
+                    .long_help(i18n::translate(
+                        language,
+                        i18n::TranslationKey::CliFilterHelp,
+                    ))
+                })
+        })
+        .mut_subcommand("cat", |subcommand| {
+            subcommand
+                .about(i18n::translate(language, i18n::TranslationKey::CliCatAbout))
+                .long_about(i18n::translate(language, i18n::TranslationKey::CliCatAbout))
+        })
+        .mut_subcommand("approve", |subcommand| {
+            subcommand
+                .about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliApproveAbout,
+                ))
+                .long_about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliApproveAbout,
+                ))
+        })
+        .mut_subcommand("mini-cat", |subcommand| {
+            subcommand
+                .about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliMiniCatAbout,
+                ))
+                .long_about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliMiniCatAbout,
+                ))
+                .mut_arg("agent_id", |arg| {
+                    arg.help(i18n::translate(
+                        language,
+                        i18n::TranslationKey::CliMiniCatAgentIdHelp,
+                    ))
+                    .long_help(i18n::translate(
+                        language,
+                        i18n::TranslationKey::CliMiniCatAgentIdHelp,
+                    ))
+                })
+        })
+        .mut_subcommand("server", |subcommand| {
+            subcommand
+                .about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliServerAbout,
+                ))
+                .long_about(i18n::translate(
+                    language,
+                    i18n::TranslationKey::CliServerAbout,
+                ))
+                .mut_arg("port", |arg| {
+                    arg.help(i18n::translate(
+                        language,
+                        i18n::TranslationKey::CliServerPortHelp,
+                    ))
+                    .long_help(i18n::translate(
+                        language,
+                        i18n::TranslationKey::CliServerPortHelp,
+                    ))
+                })
+        })
+}
+
+/// 使用当前语言解析命令行参数。
+///
+/// 返回值：
+/// - 已完成解析的 `Cli` 结构。
+///
+/// 错误处理：
+/// - 参数校验失败或用户请求帮助/版本时，clap 会自行输出信息并退出进程。
+fn parse_cli() -> Cli {
+    let language = i18n::current_language();
+    let matches = build_localized_cli_command(language).get_matches();
+    Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit())
+}
+
+/// 应用的实际进程入口。
+///
+/// 职责与边界：
+/// - 负责完成启动期平台初始化、解析命令行参数并分发到具体命令处理函数。
+/// - 不负责子命令业务实现；具体逻辑由各模块函数承载。
+///
+/// 关键副作用：
+/// - 可能修改 macOS 运行时 UI 行为，启动自动配置、GUI 和后台服务。
 fn main() {
     #[cfg(target_os = "macos")]
     cat::hide_dock_icon();
@@ -125,7 +313,7 @@ fn main() {
         }
     }
 
-    let cli = Cli::parse();
+    let cli = parse_cli();
     let command = cli.command.unwrap_or(Commands::Cat);
 
     if command.needs_auto_setup() {
@@ -278,5 +466,33 @@ fn handle_install(scope: &str) {
             eprintln!("{}: {}", "Installation failed".red().bold(), e);
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::i18n::AppLanguage;
+
+    use super::build_localized_cli_command;
+
+    #[test]
+    fn cli_help_english_root_help_contains_localized_descriptions() {
+        let mut command = build_localized_cli_command(AppLanguage::English);
+        let help = command.render_help().to_string();
+
+        assert!(help.contains("Passive hook event monitor for Claude Code"));
+        assert!(help.contains("Open a topmost window for event logs"));
+    }
+
+    #[test]
+    fn cli_help_chinese_install_help_contains_localized_argument_help() {
+        let mut command = build_localized_cli_command(AppLanguage::SimplifiedChinese);
+        let install = command
+            .find_subcommand_mut("install")
+            .expect("install command");
+        let help = install.render_help().to_string();
+
+        assert!(help.contains("安装 hook 配置到 settings.json"));
+        assert!(help.contains("安装范围：user（全局）或 project（项目级别）"));
     }
 }
