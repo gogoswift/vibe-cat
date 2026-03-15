@@ -535,11 +535,103 @@ impl AppliedLayout {
     }
 }
 
+/// 结合 `dock_frame` 与 `visible_frame` 计算 Bottom Dock 的窗口基线。
+///
+/// 语义与边界：
+/// - 运行时主窗口使用 winit/macOS 的“相对主屏顶部、Y 轴向下”坐标系。
+/// - AX 路径下的 `dock_frame.y` 表示 Dock 顶边的 AppKit 全局 Y；估算路径下
+///   的 `dock_frame.y` 则可能表示 Dock 底边，因此需要结合 `visible_frame`
+///   判定实际含义。
+/// - 若 `visible_frame` 已经保留出比 `dock_frame` 更高的安全区，优先使用更保守
+///   的那一条基线，避免猫被 Dock 挡住。
+///
+/// 入参：
+/// - `screens`：当前轮次屏幕快照，用于取得主显示器高度。
+/// - `anchor_screen`：当前 Dock 锚点屏幕。
+/// - `dock_frame`：Bottom 模式 Dock 几何（AppKit 全局坐标）。
+///
+/// 返回：
+/// - 对齐 winit/macOS 坐标系的 Dock 顶边基线值（point）。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；主显示器高度缺失时退回锚点屏幕高度。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn bottom_dock_base_y_from_frame(
+    screens: &[MacScreenSnapshot],
+    anchor_screen: &MacScreenSnapshot,
+    dock_frame: &crate::cat_layout::Rect,
+) -> f32 {
+    const DOCK_FRAME_VISIBLE_BOTTOM_EPSILON: f32 = 1.0;
+
+    let main_height = main_display_height(screens).unwrap_or(anchor_screen.frame.height);
+    let dock_top_in_appkit = if ((dock_frame.y + dock_frame.height) - anchor_screen.visible_frame.y)
+        .abs()
+        <= DOCK_FRAME_VISIBLE_BOTTOM_EPSILON
+    {
+        dock_frame.y + dock_frame.height
+    } else {
+        dock_frame.y
+    };
+
+    main_height - dock_top_in_appkit
+}
+
+/// 解析运行时 `AppliedLayout` 应使用的窗口 Y 基线。
+///
+/// 语义与边界：
+/// - `Floor` 模式继续沿用 `visible_frame` 的底边语义。
+/// - `Bottom` 模式会同时参考 `visible_frame` 与 `dock_frame`：
+///   - `visible_frame` 正常时维持现有更保守的保留高度；
+///   - `visible_frame` 因自动隐藏或副屏切换丢失底边内缩时，回退到实时 Dock 几何。
+///
+/// 入参：
+/// - `screens`：当前轮次屏幕快照。
+/// - `anchor_screen`：Dock 锚点屏幕。
+/// - `dock_sample`：当前 Dock 采样结果。
+///
+/// 返回：
+/// - 运行时窗口定位使用的 Y 基线（point）。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；Dock 几何缺失时退回 `visible_frame` 基线。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn applied_layout_base_y(
+    screens: &[MacScreenSnapshot],
+    anchor_screen: &MacScreenSnapshot,
+    dock_sample: &DockPlacementSample,
+) -> f32 {
+    let visible_base_y = legacy_visible_bottom(screens, anchor_screen);
+
+    if dock_sample.dock_snapshot.mode != crate::cat_layout::DockPlacementMode::Bottom {
+        return visible_base_y;
+    }
+
+    dock_sample
+        .dock_snapshot
+        .dock_frame
+        .as_ref()
+        .map(|dock_frame| {
+            visible_base_y.min(bottom_dock_base_y_from_frame(
+                screens,
+                anchor_screen,
+                dock_frame,
+            ))
+        })
+        .unwrap_or(visible_base_y)
+}
+
 /// 使用纯布局计算结果构建运行时 `AppliedLayout`。
 ///
 /// 语义与边界：
 /// - 运行时窗口 Y 坐标会转换到 winit/macOS 使用的“相对主屏顶部”的坐标系（见
-///   `legacy_visible_bottom`），避免上下堆叠多屏时把窗口算到错误屏幕。
+///   `legacy_visible_bottom` / `applied_layout_base_y`），避免上下堆叠多屏时把窗口
+///   算到错误屏幕，也避免副屏/自动隐藏场景下被 Dock 挡住。
 /// - 水平方向（窗口宽度/活动范围）完全复用 `cat_layout::compute_cat_window_layout` 的输出，
 ///   避免测试与运行时逻辑分叉。
 /// - `dock_autohide` 仅做透传，不参与本函数内的几何推断。
@@ -588,7 +680,7 @@ fn compute_applied_layout_for_dock_sample(
     let window_width = walk_bounds.width;
 
     let anchor_screen = screen_by_id(screens, &layout.anchor_screen_id).unwrap_or(fallback_screen);
-    let base_y = legacy_visible_bottom(screens, anchor_screen);
+    let base_y = applied_layout_base_y(screens, anchor_screen, dock_sample);
 
     Some(AppliedLayout {
         anchor_screen_id: layout.anchor_screen_id,
@@ -2979,8 +3071,7 @@ fn get_dock_bounds_ax(screens: &[MacScreenSnapshot]) -> Option<DockHorizontalBou
         if ax_err != SUCCESS {
             CFRelease(dock_el);
             // 只在权限相关错误时弹窗：-25211 (APIDisabled) 或 -25205 (CannotComplete)
-            if (ax_err == -25211 || ax_err == -25205)
-                && !AX_PROMPTED.swap(true, Ordering::Relaxed)
+            if (ax_err == -25211 || ax_err == -25205) && !AX_PROMPTED.swap(true, Ordering::Relaxed)
             {
                 use objc2_foundation::{NSDictionary, NSNumber, NSString as NSStr};
                 let key = NSStr::from_str("AXTrustedCheckOptionPrompt");
@@ -3508,7 +3599,8 @@ mod tests {
     use crate::tray;
 
     use super::{
-        build_floor_mode_sample, build_screen_id, dock_bounds_from_ax_list_metrics,
+        build_bottom_mode_sample, build_floor_mode_sample, build_screen_id,
+        compute_applied_layout_for_dock_sample, dock_bounds_from_ax_list_metrics,
         dock_refresh_interval_for_tick, layout_changed, legacy_visible_bottom,
         main_screen_snapshot, refresh_interval, resolve_dock_anchor_screen,
         resolve_next_applied_layout, select_side_dock_anchor_screen,
@@ -3713,6 +3805,66 @@ mod tests {
             .expect("AX geometry should still resolve to a screen");
 
         assert_eq!(bounds.anchor_screen_id, main.id);
+    }
+
+    #[test]
+    fn applied_layout_bottom_mode_prefers_visible_frame_when_it_reserves_more_space_than_ax_frame()
+    {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1512.0, 982.0),
+            crate::cat_layout::Rect::new(0.0, 58.0, 1512.0, 891.0),
+            2.0,
+            true,
+        );
+        let screens = vec![main.clone()];
+        let fallback_main = main_screen_snapshot(&screens).expect("main screen should exist");
+        let bounds = super::DockHorizontalBounds {
+            anchor_screen_id: main.id.clone(),
+            left: 295.0,
+            right: 1217.0,
+            dock_frame: Some(crate::cat_layout::Rect::new(295.0, 52.0, 922.0, 52.0)),
+        };
+        let dock_sample = build_bottom_mode_sample(&main, &bounds, false);
+
+        let layout = compute_applied_layout_for_dock_sample(&screens, fallback_main, &dock_sample)
+            .expect("bottom dock layout should be computed");
+
+        assert_eq!(layout.window_origin.y, 924.0);
+    }
+
+    #[test]
+    fn applied_layout_bottom_mode_uses_dock_frame_when_upper_screen_visible_frame_loses_bottom_inset(
+    ) {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1512.0, 982.0),
+            crate::cat_layout::Rect::new(0.0, 58.0, 1512.0, 891.0),
+            2.0,
+            true,
+        );
+        let upper = make_screen(
+            "Upper External",
+            crate::cat_layout::Rect::new(-153.0, 982.0, 2560.0, 1440.0),
+            crate::cat_layout::Rect::new(-153.0, 982.0, 2560.0, 1440.0),
+            1.0,
+            false,
+        );
+        let screens = vec![main.clone(), upper.clone()];
+        let fallback_main = main_screen_snapshot(&screens).expect("main screen should exist");
+        let bounds = super::DockHorizontalBounds {
+            anchor_screen_id: upper.id.clone(),
+            left: 295.0,
+            right: 1217.0,
+            dock_frame: Some(crate::cat_layout::Rect::new(295.0, 1034.0, 922.0, 52.0)),
+        };
+        let dock_sample = build_bottom_mode_sample(&upper, &bounds, true);
+
+        let layout = compute_applied_layout_for_dock_sample(&screens, fallback_main, &dock_sample)
+            .expect("upper-screen bottom dock layout should be computed");
+
+        assert_eq!(layout.anchor_screen_id, upper.id);
+        assert_eq!(layout.window_origin.y, -52.0);
     }
 
     #[test]
