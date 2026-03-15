@@ -26,7 +26,7 @@ Vibe Cat is a macOS desktop pet that sits on your Dock and reacts to [Claude Cod
 - **Drag interaction** — drag the cat around with your mouse
 - **Multi-display Dock support** — the cat anchors to the screen that currently contains the Dock (not always the primary display)
 - **Auto-hide Dock support** — the cat re-snaps to the Dock edge when the Dock shows/hides
-- **Side Dock fallback (floor mode)** — when Dock is on the left/right, the cat still walks along the bottom edge of the visible frame; it does not stick to the vertical side
+- **Side Dock fallback (floor mode)** — when Dock is on the left/right, the cat still walks along the bottom edge of the usable desktop area; it does not stick to the vertical side and never enters the Dock-occupied strip
 
 ### Install
 
