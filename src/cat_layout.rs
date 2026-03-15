@@ -53,6 +53,27 @@ impl Rect {
             height,
         }
     }
+
+    /// 判断点是否落在矩形内（含边界）。
+    ///
+    /// 入参：
+    /// - `point_x`/`point_y`：与矩形相同坐标系下的点坐标（point）。
+    ///
+    /// 返回：
+    /// - `true`：点在矩形内部或边界上。
+    /// - `false`：点在矩形外。
+    ///
+    /// 错误处理：
+    /// - 不返回错误；若矩形尺寸非法（负值），结果由比较表达式自然决定。
+    ///
+    /// 关键副作用：
+    /// - 无。
+    pub fn contains_point(&self, point_x: f32, point_y: f32) -> bool {
+        point_x >= self.x
+            && point_x <= self.x + self.width
+            && point_y >= self.y
+            && point_y <= self.y + self.height
+    }
 }
 
 /// 单块屏幕的布局快照。
@@ -294,5 +315,31 @@ mod tests {
         assert_eq!(layout.window_origin.y, 864.0);
         assert_eq!(layout.walk_bounds.width, 1416.0);
         assert_eq!(layout.mode, DockPlacementMode::Floor);
+    }
+
+    #[test]
+    fn bottom_dock_on_left_side_monitor_accepts_negative_global_x() {
+        let screens = vec![
+            ScreenSnapshot::new(
+                "left",
+                Rect::new(-1440.0, 0.0, 1440.0, 900.0),
+                Rect::new(-1440.0, 25.0, 1440.0, 850.0),
+                1.0,
+            ),
+            ScreenSnapshot::new(
+                "main",
+                Rect::new(0.0, 0.0, 1728.0, 1117.0),
+                Rect::new(0.0, 25.0, 1728.0, 1070.0),
+                2.0,
+            ),
+        ];
+        let dock = DockSnapshot::bottom("left", Rect::new(-1200.0, 820.0, 800.0, 64.0), false);
+
+        let layout = compute_cat_window_layout(&screens, &dock, 96.0, 22.0).unwrap();
+
+        assert!(layout.window_origin.x < 0.0);
+        assert!(screens[0]
+            .frame
+            .contains_point(layout.window_origin.x, layout.window_origin.y));
     }
 }
