@@ -515,6 +515,59 @@ fn refresh_interval(autohide: bool) -> Duration {
     }
 }
 
+/// 解析 Dock 刷新调度使用的自动隐藏状态。
+///
+/// 语义与边界：
+/// - 优先使用最新实时探测值，避免调度依赖滞后的已应用布局状态。
+/// - 无实时探测值时，回退到已应用布局中的 `dock_autohide`。
+/// - 二者都缺失时按 `false` 处理，保持历史兜底语义。
+///
+/// 入参：
+/// - `applied_layout`：已应用布局快照，可为空。
+/// - `live_probe_autohide`：实时探测到的 Dock 自动隐藏状态，可为空。
+///
+/// 返回：
+/// - 当前调度应使用的自动隐藏状态。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误。
+///
+/// 关键副作用：
+/// - 无。
+fn resolve_refresh_autohide(
+    applied_layout: Option<&AppliedLayout>,
+    live_probe_autohide: Option<bool>,
+) -> bool {
+    live_probe_autohide
+        .or_else(|| applied_layout.map(|layout| layout.dock_autohide))
+        .unwrap_or(false)
+}
+
+/// 计算本轮更新应使用的 Dock 刷新间隔。
+///
+/// 语义与边界：
+/// - 间隔由 `resolve_refresh_autohide` 决定的自动隐藏状态驱动。
+/// - 实时探测值存在时可覆盖已应用布局，避免自动隐藏切换后的调度迟滞。
+///
+/// 入参：
+/// - `applied_layout`：已应用布局快照，可为空。
+/// - `live_probe_autohide`：实时探测到的自动隐藏状态，可为空。
+///
+/// 返回：
+/// - 当前 tick 应使用的 Dock 刷新间隔。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误。
+///
+/// 关键副作用：
+/// - 无。
+fn dock_refresh_interval_for_tick(
+    applied_layout: Option<&AppliedLayout>,
+    live_probe_autohide: Option<bool>,
+) -> Duration {
+    refresh_interval(resolve_refresh_autohide(applied_layout, live_probe_autohide))
+}
+
 /// 判断新布局是否需要触发窗口重摆。
 ///
 /// 语义与边界：
@@ -656,6 +709,10 @@ struct UnifiedCatApp {
     base_y: f32,
     last_poll_time: Instant,
     last_dock_refresh: Instant,
+    /// 最近一次实时探测到的 Dock 自动隐藏状态。
+    dock_autohide_probe: Option<bool>,
+    /// 最近一次执行 Dock 自动隐藏实时探测的时间。
+    last_dock_autohide_probe: Instant,
     last_event_time: Option<String>,
     /// agent_id → 创建时间
     known_subagents: HashSet<String>,
@@ -759,6 +816,8 @@ impl UnifiedCatApp {
             base_y: initial_layout.window_origin.y,
             last_poll_time: now,
             last_dock_refresh: now,
+            dock_autohide_probe: Some(initial_layout.dock_autohide),
+            last_dock_autohide_probe: now,
             last_event_time: None,
             known_subagents: HashSet::new(),
             debug_subagents_active: false,
@@ -1177,6 +1236,7 @@ impl UnifiedCatApp {
                 self.window_width = applied_layout.window_width;
                 self.dock_right = self.dock_left + self.window_width;
                 self.base_y = applied_layout.window_origin.y;
+                self.dock_autohide_probe = Some(applied_layout.dock_autohide);
                 self.applied_layout = Some(applied_layout);
 
                 // 钳位所有猫（内联以避免借用冲突）
@@ -1198,6 +1258,33 @@ impl UnifiedCatApp {
         false
     }
 
+    /// 按固定采样周期刷新 Dock 自动隐藏实时探测值。
+    ///
+    /// 语义与边界：
+    /// - 该探测仅用于刷新调度节流，不直接触发布局应用。
+    /// - 采样间隔固定为 250ms，确保自动隐藏开关切换可在同量级被调度感知。
+    ///
+    /// 入参：
+    /// - `now`：当前时间戳，用于控制采样节流。
+    ///
+    /// 返回：
+    /// - 无。
+    ///
+    /// 错误处理与失败场景：
+    /// - macOS 探测失败时沿用 `dock_autohide_enabled` 的 `false` 兜底语义。
+    ///
+    /// 关键副作用：
+    /// - 在 macOS 上会调用 `defaults read com.apple.dock autohide`。
+    fn refresh_dock_autohide_probe(&mut self, now: Instant) {
+        if now.duration_since(self.last_dock_autohide_probe) < Duration::from_millis(250) {
+            return;
+        }
+        self.last_dock_autohide_probe = now;
+        #[cfg(target_os = "macos")]
+        {
+            self.dock_autohide_probe = Some(dock_autohide_enabled());
+        }
+    }
 }
 
 impl eframe::App for UnifiedCatApp {
@@ -1289,11 +1376,10 @@ impl eframe::App for UnifiedCatApp {
         }
 
         // ---- 后台 Dock 刷新（自动隐藏时加速，不阻塞 UI） ----
-        let dock_refresh_interval = refresh_interval(
-            self.applied_layout
-                .as_ref()
-                .map(|layout| layout.dock_autohide)
-                .unwrap_or(false),
+        self.refresh_dock_autohide_probe(now);
+        let dock_refresh_interval = dock_refresh_interval_for_tick(
+            self.applied_layout.as_ref(),
+            self.dock_autohide_probe,
         );
         if now.duration_since(self.last_dock_refresh) > dock_refresh_interval {
             self.last_dock_refresh = now;
@@ -2926,8 +3012,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        build_floor_mode_sample, build_screen_id, layout_changed, legacy_visible_bottom,
-        main_screen_snapshot, refresh_interval, resolve_dock_anchor_screen, resolve_next_applied_layout,
+        build_floor_mode_sample, build_screen_id, dock_refresh_interval_for_tick, layout_changed,
+        legacy_visible_bottom, main_screen_snapshot, refresh_interval, resolve_dock_anchor_screen,
+        resolve_next_applied_layout,
         select_side_dock_anchor_screen, AppliedLayout, MacScreenSnapshot,
     };
 
@@ -3137,5 +3224,19 @@ mod tests {
     fn autohide_layout_uses_fast_refresh_interval() {
         assert_eq!(refresh_interval(true), Duration::from_millis(250));
         assert_eq!(refresh_interval(false), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn live_autohide_probe_should_override_stale_applied_layout_for_refresh() {
+        let stale_layout = make_layout(
+            "main",
+            0.0,
+            1092.0,
+            1200.0,
+            crate::cat_layout::DockPlacementMode::Bottom,
+        );
+
+        let interval = dock_refresh_interval_for_tick(Some(&stale_layout), Some(true));
+        assert_eq!(interval, Duration::from_millis(250));
     }
 }
