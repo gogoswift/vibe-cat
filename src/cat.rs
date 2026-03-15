@@ -568,6 +568,30 @@ fn dock_refresh_interval_for_tick(
     refresh_interval(resolve_refresh_autohide(applied_layout, live_probe_autohide))
 }
 
+/// 判断是否需要启动高频自动隐藏探测。
+///
+/// 语义与边界：
+/// - 仅在当前已应用布局仍是“非自动隐藏”时返回 `true`。
+/// - `None` 视为尚未确认状态，保持探测开启以尽快发现自动隐藏切换。
+///
+/// 入参：
+/// - `applied_layout`：当前已应用布局快照，可为空。
+///
+/// 返回：
+/// - `true`：应启动 250ms 高频自动隐藏探测。
+/// - `false`：无需额外高频探测。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误。
+///
+/// 关键副作用：
+/// - 无。
+fn should_run_fast_autohide_probe(applied_layout: Option<&AppliedLayout>) -> bool {
+    applied_layout
+        .map(|layout| !layout.dock_autohide)
+        .unwrap_or(true)
+}
+
 /// 判断新布局是否需要触发窗口重摆。
 ///
 /// 语义与边界：
@@ -713,6 +737,10 @@ struct UnifiedCatApp {
     dock_autohide_probe: Option<bool>,
     /// 最近一次执行 Dock 自动隐藏实时探测的时间。
     last_dock_autohide_probe: Instant,
+    /// 后台自动隐藏探测结果。
+    dock_autohide_probe_result: Arc<Mutex<Option<bool>>>,
+    /// 后台自动隐藏探测是否进行中。
+    dock_autohide_probe_refreshing: Arc<Mutex<bool>>,
     last_event_time: Option<String>,
     /// agent_id → 创建时间
     known_subagents: HashSet<String>,
@@ -818,6 +846,8 @@ impl UnifiedCatApp {
             last_dock_refresh: now,
             dock_autohide_probe: Some(initial_layout.dock_autohide),
             last_dock_autohide_probe: now,
+            dock_autohide_probe_result: Arc::new(Mutex::new(None)),
+            dock_autohide_probe_refreshing: Arc::new(Mutex::new(false)),
             last_event_time: None,
             known_subagents: HashSet::new(),
             debug_subagents_active: false,
@@ -1258,11 +1288,39 @@ impl UnifiedCatApp {
         false
     }
 
-    /// 按固定采样周期刷新 Dock 自动隐藏实时探测值。
+    /// 合并后台自动隐藏探测结果到本地缓存。
+    ///
+    /// 语义与边界：
+    /// - 仅消费后台线程写回的最新值，不触发系统命令调用。
+    /// - 无结果时保持当前缓存不变。
+    ///
+    /// 入参：
+    /// - `&mut self`：会更新 `dock_autohide_probe`。
+    ///
+    /// 返回：
+    /// - 无。
+    ///
+    /// 错误处理与失败场景：
+    /// - 不返回错误；共享状态加锁失败时 panic（保持当前实现风格）。
+    ///
+    /// 关键副作用：
+    /// - 无。
+    fn apply_dock_autohide_probe_result(&mut self) {
+        let probe_result = {
+            let mut lock = self.dock_autohide_probe_result.lock().unwrap();
+            lock.take()
+        };
+        if let Some(autohide) = probe_result {
+            self.dock_autohide_probe = Some(autohide);
+        }
+    }
+
+    /// 按固定采样周期启动后台 Dock 自动隐藏探测。
     ///
     /// 语义与边界：
     /// - 该探测仅用于刷新调度节流，不直接触发布局应用。
-    /// - 采样间隔固定为 250ms，确保自动隐藏开关切换可在同量级被调度感知。
+    /// - 仅在当前布局仍为非自动隐藏时启用，避免与已有 250ms Dock 刷新链路重复。
+    /// - 采样间隔固定为 250ms，并在后台线程执行系统命令，避免阻塞 UI 线程。
     ///
     /// 入参：
     /// - `now`：当前时间戳，用于控制采样节流。
@@ -1274,15 +1332,41 @@ impl UnifiedCatApp {
     /// - macOS 探测失败时沿用 `dock_autohide_enabled` 的 `false` 兜底语义。
     ///
     /// 关键副作用：
-    /// - 在 macOS 上会调用 `defaults read com.apple.dock autohide`。
-    fn refresh_dock_autohide_probe(&mut self, now: Instant) {
+    /// - 在后台线程调用 `defaults read com.apple.dock autohide`。
+    fn start_dock_autohide_probe_bg(&mut self, now: Instant) {
+        if !should_run_fast_autohide_probe(self.applied_layout.as_ref()) {
+            return;
+        }
         if now.duration_since(self.last_dock_autohide_probe) < Duration::from_millis(250) {
             return;
         }
+
+        let mut refreshing = self.dock_autohide_probe_refreshing.lock().unwrap();
+        if *refreshing {
+            return;
+        }
+        *refreshing = true;
         self.last_dock_autohide_probe = now;
+        drop(refreshing);
+
         #[cfg(target_os = "macos")]
         {
-            self.dock_autohide_probe = Some(dock_autohide_enabled());
+            let probe_result_arc = Arc::clone(&self.dock_autohide_probe_result);
+            let refreshing_arc = Arc::clone(&self.dock_autohide_probe_refreshing);
+            std::thread::spawn(move || {
+                let autohide = dock_autohide_enabled();
+                let mut probe_result = probe_result_arc.lock().unwrap();
+                *probe_result = Some(autohide);
+                let mut probe_refreshing = refreshing_arc.lock().unwrap();
+                *probe_refreshing = false;
+            });
+            return;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut probe_refreshing = self.dock_autohide_probe_refreshing.lock().unwrap();
+            *probe_refreshing = false;
         }
     }
 }
@@ -1376,7 +1460,8 @@ impl eframe::App for UnifiedCatApp {
         }
 
         // ---- 后台 Dock 刷新（自动隐藏时加速，不阻塞 UI） ----
-        self.refresh_dock_autohide_probe(now);
+        self.apply_dock_autohide_probe_result();
+        self.start_dock_autohide_probe_bg(now);
         let dock_refresh_interval = dock_refresh_interval_for_tick(
             self.applied_layout.as_ref(),
             self.dock_autohide_probe,
@@ -3014,7 +3099,7 @@ mod tests {
     use super::{
         build_floor_mode_sample, build_screen_id, dock_refresh_interval_for_tick, layout_changed,
         legacy_visible_bottom, main_screen_snapshot, refresh_interval, resolve_dock_anchor_screen,
-        resolve_next_applied_layout,
+        resolve_next_applied_layout, should_run_fast_autohide_probe,
         select_side_dock_anchor_screen, AppliedLayout, MacScreenSnapshot,
     };
 
@@ -3238,5 +3323,20 @@ mod tests {
 
         let interval = dock_refresh_interval_for_tick(Some(&stale_layout), Some(true));
         assert_eq!(interval, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn fast_autohide_probe_should_stop_when_applied_layout_is_autohide() {
+        let mut autohide_layout = make_layout(
+            "main",
+            0.0,
+            1092.0,
+            1200.0,
+            crate::cat_layout::DockPlacementMode::Bottom,
+        );
+        autohide_layout.dock_autohide = true;
+
+        assert!(!should_run_fast_autohide_probe(Some(&autohide_layout)));
+        assert!(should_run_fast_autohide_probe(None));
     }
 }
