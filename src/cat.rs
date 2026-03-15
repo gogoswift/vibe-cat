@@ -402,14 +402,128 @@ fn extract_cropped_frame(
 // UnifiedCatApp: 统一窗口，所有猫在同一个 Dock 宽度窗口内
 // ============================================================
 
-/// 后台线程传回的 Dock 边界数据
-#[derive(Clone)]
+/// 后台线程传回的完整布局结果。
+///
+/// 语义与边界：
+/// - 线程间只传递 `AppliedLayout`，避免 UI 线程自行拼装局部字段。
+/// - 结果始终对应同一轮 Dock 采样快照。
+///
+/// 关键副作用：
+/// - 无。
+#[derive(Clone, Debug)]
 struct DockBoundsResult {
+    layout: AppliedLayout,
+}
+
+/// UI 线程已应用的窗口布局快照。
+///
+/// 语义与边界：
+/// - `window_origin` 记录窗口定位基准：`x` 为窗口左上角，`y` 为基线换算值。
+/// - `walk_bounds` 描述猫可活动区域，宽度同时作为窗口宽度来源。
+/// - `dock_mode` 与 `anchor_screen_id` 共同标识布局策略与锚定屏幕。
+///
+/// 关键副作用：
+/// - 无。
+#[derive(Clone, Debug)]
+struct AppliedLayout {
     anchor_screen_id: String,
-    dock_mode: crate::cat_layout::DockPlacementMode,
-    dock_frame: Option<crate::cat_layout::Rect>,
+    window_origin: egui::Pos2,
     walk_bounds: crate::cat_layout::Rect,
-    base_y: f32,
+    dock_mode: crate::cat_layout::DockPlacementMode,
+    window_width: f32,
+}
+
+impl AppliedLayout {
+    /// 基于 Dock 采样结果构建应用布局快照。
+    ///
+    /// 入参：
+    /// - `sample`：Dock 采样结果，需来自同一轮屏幕快照。
+    /// - `base_y`：窗口 Y 轴换算所需的基线值（point）。
+    ///
+    /// 返回：
+    /// - 可直接用于 `apply_dock_result` 的完整布局快照。
+    ///
+    /// 错误处理与失败场景：
+    /// - 不返回错误；调用方需保证 `sample.walk_bounds.width > 0`。
+    ///
+    /// 关键副作用：
+    /// - 无。
+    #[cfg(target_os = "macos")]
+    fn from_dock_sample(sample: &DockPlacementSample, base_y: f32) -> Self {
+        let walk_bounds = sample.walk_bounds.clone();
+        Self {
+            anchor_screen_id: sample.dock_snapshot.anchor_screen_id.clone(),
+            window_origin: egui::pos2(walk_bounds.x, base_y),
+            walk_bounds,
+            dock_mode: sample.dock_snapshot.mode,
+            window_width: sample.walk_bounds.width,
+        }
+    }
+
+    /// 构建跨平台兜底布局快照。
+    ///
+    /// 入参：
+    /// - `left`/`right`：窗口水平边界（point）。
+    /// - `base_y`：窗口 Y 轴换算所需基线值（point）。
+    ///
+    /// 返回：
+    /// - 使用 Floor 模式的兜底布局快照。
+    ///
+    /// 错误处理与失败场景：
+    /// - 不返回错误；当 `right < left` 时宽度会被钳为 `0`。
+    ///
+    /// 关键副作用：
+    /// - 无。
+    fn fallback(left: f32, right: f32, base_y: f32) -> Self {
+        let width = (right - left).max(0.0);
+        Self {
+            anchor_screen_id: "fallback".to_string(),
+            window_origin: egui::pos2(left, base_y),
+            walk_bounds: crate::cat_layout::Rect::new(left, base_y, width, 0.0),
+            dock_mode: crate::cat_layout::DockPlacementMode::Floor,
+            window_width: width,
+        }
+    }
+}
+
+/// 判断新布局是否需要触发窗口重摆。
+///
+/// 语义与边界：
+/// - 首次应用布局时总是返回 `true`。
+/// - 比较锚点屏幕、Dock 模式、窗口原点、活动区域与窗口宽度。
+/// - 浮点字段使用阈值比较，避免子像素抖动导致频繁重摆。
+///
+/// 入参：
+/// - `previous`：已应用布局，可为空。
+/// - `next`：待应用布局。
+///
+/// 返回：
+/// - `true`：需要重摆窗口。
+/// - `false`：布局可视为未变化。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；浮点比较使用固定阈值。
+///
+/// 关键副作用：
+/// - 无。
+fn layout_changed(previous: Option<&AppliedLayout>, next: &AppliedLayout) -> bool {
+    const LAYOUT_EPSILON: f32 = 0.5;
+    let eq_f32 = |lhs: f32, rhs: f32| (lhs - rhs).abs() <= LAYOUT_EPSILON;
+
+    match previous {
+        Some(current) => {
+            current.anchor_screen_id != next.anchor_screen_id
+                || current.dock_mode != next.dock_mode
+                || !eq_f32(current.window_origin.x, next.window_origin.x)
+                || !eq_f32(current.window_origin.y, next.window_origin.y)
+                || !eq_f32(current.walk_bounds.x, next.walk_bounds.x)
+                || !eq_f32(current.walk_bounds.y, next.walk_bounds.y)
+                || !eq_f32(current.walk_bounds.width, next.walk_bounds.width)
+                || !eq_f32(current.walk_bounds.height, next.walk_bounds.height)
+                || !eq_f32(current.window_width, next.window_width)
+        }
+        None => true,
+    }
 }
 
 /// Dock 水平边界与锚点屏幕。
@@ -444,7 +558,6 @@ struct DockHorizontalBounds {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Debug)]
 struct DockPlacementSample {
-    anchor_screen_id: String,
     dock_snapshot: crate::cat_layout::DockSnapshot,
     walk_bounds: crate::cat_layout::Rect,
 }
@@ -476,6 +589,7 @@ struct UnifiedCatApp {
     cx_main_cat: CatEntity,
     mini_cats: Vec<CatEntity>,
     position_phase: u32,
+    applied_layout: Option<AppliedLayout>,
     window_width: f32,
     window_height: f32,
     dock_left: f32,
@@ -520,7 +634,25 @@ struct UnifiedCatApp {
 }
 
 impl UnifiedCatApp {
-    fn new(ctx: &egui::Context, dock_left: f32, dock_right: f32, visible_bottom: f32) -> Self {
+    /// 创建统一猫窗口应用状态。
+    ///
+    /// 语义与边界：
+    /// - 基于 `initial_layout` 初始化窗口宽度、Dock 活动范围和定位基线。
+    /// - 仅做内存初始化，不会立即发送窗口重摆命令。
+    ///
+    /// 入参：
+    /// - `ctx`：egui 上下文，用于加载纹理与字体。
+    /// - `initial_layout`：启动阶段计算出的完整布局快照。
+    ///
+    /// 返回：
+    /// - 可进入 `update` 循环的 `UnifiedCatApp`。
+    ///
+    /// 错误处理与失败场景：
+    /// - 精灵图解码失败会直接 panic，保持历史启动语义。
+    ///
+    /// 关键副作用：
+    /// - 可能初始化 macOS 托盘图标与 Dock 图标隐藏行为。
+    fn new(ctx: &egui::Context, initial_layout: AppliedLayout) -> Self {
         #[cfg(target_os = "macos")]
         hide_dock_icon();
         Self::setup_chinese_font(ctx);
@@ -536,7 +668,9 @@ impl UnifiedCatApp {
         let main_cat = CatEntity::new_main(ctx, &sheet);
         let cx_main_cat = CatEntity::new_main(ctx, &cx_sheet);
 
-        let window_width = dock_right - dock_left;
+        let dock_left = initial_layout.window_origin.x;
+        let window_width = initial_layout.window_width;
+        let dock_right = dock_left + window_width;
         let window_height = main_cat.max_height + 22.0;
 
         // 初始化托盘图标
@@ -558,11 +692,12 @@ impl UnifiedCatApp {
             cx_main_cat,
             mini_cats: Vec::new(),
             position_phase: 0,
+            applied_layout: Some(initial_layout.clone()),
             window_width,
             window_height,
             dock_left,
             dock_right,
-            base_y: visible_bottom,
+            base_y: initial_layout.window_origin.y,
             last_poll_time: now,
             last_dock_refresh: now,
             last_event_time: None,
@@ -937,14 +1072,12 @@ impl UnifiedCatApp {
                         if dock_sample.walk_bounds.width > 0.0 {
                             let dock_screen =
                                 resolve_dock_anchor_screen(&screens, fallback_screen, &dock_sample);
+                            let layout = AppliedLayout::from_dock_sample(
+                                &dock_sample,
+                                legacy_visible_bottom(&screens, dock_screen),
+                            );
                             let mut result = result_arc.lock().unwrap();
-                            *result = Some(DockBoundsResult {
-                                anchor_screen_id: dock_screen.id.clone(),
-                                dock_mode: dock_sample.dock_snapshot.mode,
-                                dock_frame: dock_sample.dock_snapshot.dock_frame.clone(),
-                                walk_bounds: dock_sample.walk_bounds.clone(),
-                                base_y: legacy_visible_bottom(&screens, dock_screen),
-                            });
+                            *result = Some(DockBoundsResult { layout });
                         }
                     }
                 }
@@ -954,21 +1087,36 @@ impl UnifiedCatApp {
         });
     }
 
-    /// 从后台结果应用 Dock 边界，返回宽度是否变化
+    /// 从后台结果应用 Dock 完整布局，返回是否需要窗口重摆。
+    ///
+    /// 语义与边界：
+    /// - 仅在存在后台结果时更新状态；无结果时返回 `false`。
+    /// - 布局变化判断依赖 `layout_changed`，由调用方决定是否发送窗口命令。
+    ///
+    /// 入参：
+    /// - `&mut self`：会同步更新 `window_width/dock_left/dock_right/base_y` 与布局快照。
+    ///
+    /// 返回：
+    /// - `true`：布局发生变化，建议重设窗口尺寸与位置。
+    /// - `false`：布局未变或无新结果。
+    ///
+    /// 错误处理与失败场景：
+    /// - 不返回错误；共享状态加锁失败时 panic（保持当前实现风格）。
+    ///
+    /// 关键副作用：
+    /// - 会钳位主猫与 mini 猫的 `x_offset`，避免超出新活动范围。
     fn apply_dock_result(&mut self) -> bool {
         let result = {
             let mut lock = self.dock_result.lock().unwrap();
             lock.take()
         };
         if let Some(bounds) = result {
-            let old_width = self.window_width;
-            let _anchor_screen_id = &bounds.anchor_screen_id;
-            let _dock_mode = bounds.dock_mode;
-            let _dock_frame = &bounds.dock_frame;
-            self.dock_left = bounds.walk_bounds.x;
-            self.dock_right = bounds.walk_bounds.x + bounds.walk_bounds.width;
-            self.window_width = bounds.walk_bounds.width;
-            self.base_y = bounds.base_y;
+            let changed = layout_changed(self.applied_layout.as_ref(), &bounds.layout);
+            self.applied_layout = Some(bounds.layout.clone());
+            self.dock_left = bounds.layout.window_origin.x;
+            self.window_width = bounds.layout.window_width;
+            self.dock_right = self.dock_left + self.window_width;
+            self.base_y = bounds.layout.window_origin.y;
 
             // 钳位所有猫（内联以避免借用冲突）
             let ww = self.window_width;
@@ -983,7 +1131,7 @@ impl UnifiedCatApp {
                 if mc.x_offset > max_x { mc.x_offset = max_x; }
             }
 
-            return (self.window_width - old_width).abs() > 1.0;
+            return changed;
         }
         false
     }
@@ -1868,7 +2016,7 @@ fn resolve_dock_anchor_screen<'a>(
     fallback_screen: &'a MacScreenSnapshot,
     dock_sample: &DockPlacementSample,
 ) -> &'a MacScreenSnapshot {
-    screen_by_id(screens, &dock_sample.anchor_screen_id).unwrap_or(fallback_screen)
+    screen_by_id(screens, &dock_sample.dock_snapshot.anchor_screen_id).unwrap_or(fallback_screen)
 }
 
 /// 构造 side Dock 退化模式下的 Dock 采样结果。
@@ -1890,7 +2038,6 @@ fn resolve_dock_anchor_screen<'a>(
 fn build_floor_mode_sample(anchor_screen: &MacScreenSnapshot, autohide: bool) -> DockPlacementSample {
     let walk_bounds = anchor_screen.visible_frame.clone();
     DockPlacementSample {
-        anchor_screen_id: anchor_screen.id.clone(),
         dock_snapshot: crate::cat_layout::DockSnapshot::side(anchor_screen.id.clone(), autohide),
         walk_bounds,
     }
@@ -2021,7 +2168,6 @@ fn build_bottom_mode_sample(
         dock_frame.height,
     );
     DockPlacementSample {
-        anchor_screen_id: anchor_screen.id.clone(),
         dock_snapshot: crate::cat_layout::DockSnapshot::bottom(
             anchor_screen.id.clone(),
             dock_frame,
@@ -2637,6 +2783,16 @@ fn update_mouse_passthrough(_cat_rect: egui::Rect, _is_dragging: bool) {}
 // 入口函数
 // ============================================================
 
+/// 启动桌面像素猫主程序。
+///
+/// 语义与边界：
+/// - 启动时先解析一次 Dock 布局快照，再创建透明窗口与应用状态。
+/// - macOS 下优先使用多屏幕采样结果；失败时退化到兜底布局。
+/// - 不负责阻塞等待子线程退出，OTel 服务线程由进程生命周期托管。
+///
+/// 关键副作用：
+/// - 新建 Tokio Runtime 并启动 OTel HTTP 接收服务。
+/// - 调用 eframe 进入 GUI 主循环，直到窗口关闭。
 pub fn run_cat() {
     // 后台启动 Codex OTel 接收服务器
     std::thread::spawn(|| {
@@ -2645,32 +2801,31 @@ pub fn run_cat() {
     });
 
     #[cfg(target_os = "macos")]
-    let (initial_pos, dock_left, dock_right, visible_bottom) = {
+    let initial_layout = {
         if let Some(screens) = get_macos_screen_info() {
             if let Some(fallback_screen) = main_screen_snapshot(&screens) {
                 let dock_sample = get_dock_sample(&screens, fallback_screen);
                 let dock_screen =
                     resolve_dock_anchor_screen(&screens, fallback_screen, &dock_sample);
                 let vis_bottom = legacy_visible_bottom(&screens, dock_screen);
-                let window_height = CELL_SIZE as f32 * SCALE + 22.0;
-                let x = dock_sample.walk_bounds.x;
-                let y = vis_bottom - window_height;
-                let right = dock_sample.walk_bounds.x + dock_sample.walk_bounds.width;
-                ([x, y], x, right, vis_bottom)
+                AppliedLayout::from_dock_sample(&dock_sample, vis_bottom)
             } else {
-                ([200.0, 600.0], 200.0, 1200.0, 800.0)
+                AppliedLayout::fallback(200.0, 1200.0, 800.0)
             }
         } else {
-            ([200.0, 600.0], 200.0, 1200.0, 800.0)
+            AppliedLayout::fallback(200.0, 1200.0, 800.0)
         }
     };
 
     #[cfg(not(target_os = "macos"))]
-    let (initial_pos, dock_left, dock_right, visible_bottom) =
-        ([200.0, 600.0], 200.0, 1200.0, 800.0);
+    let initial_layout = AppliedLayout::fallback(200.0, 1200.0, 800.0);
 
-    let window_width = dock_right - dock_left;
+    let window_width = initial_layout.window_width;
     let window_height = CELL_SIZE as f32 * SCALE + 22.0;
+    let initial_pos = [
+        initial_layout.window_origin.x,
+        initial_layout.window_origin.y - window_height,
+    ];
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -2683,14 +2838,17 @@ pub fn run_cat() {
         ..Default::default()
     };
 
-    let dl = dock_left;
-    let dr = dock_right;
-    let vb = visible_bottom;
+    let startup_layout = initial_layout.clone();
 
     eframe::run_native(
         "Desktop Cat",
         options,
-        Box::new(move |cc| Ok(Box::new(UnifiedCatApp::new(&cc.egui_ctx, dl, dr, vb)))),
+        Box::new(move |cc| {
+            Ok(Box::new(UnifiedCatApp::new(
+                &cc.egui_ctx,
+                startup_layout.clone(),
+            )))
+        }),
     )
     .expect("Failed to start cat window");
 }
@@ -2698,9 +2856,9 @@ pub fn run_cat() {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
-        build_floor_mode_sample, build_screen_id, legacy_visible_bottom, main_screen_snapshot,
-        resolve_dock_anchor_screen, select_side_dock_anchor_screen,
-        MacScreenSnapshot,
+        build_floor_mode_sample, build_screen_id, layout_changed, legacy_visible_bottom,
+        main_screen_snapshot, resolve_dock_anchor_screen, select_side_dock_anchor_screen,
+        AppliedLayout, MacScreenSnapshot,
     };
 
     fn make_screen(
@@ -2717,6 +2875,42 @@ mod tests {
             scale_factor,
             is_main,
         }
+    }
+
+    fn make_layout(
+        anchor_screen_id: &str,
+        window_origin_x: f32,
+        base_y: f32,
+        width: f32,
+        mode: crate::cat_layout::DockPlacementMode,
+    ) -> AppliedLayout {
+        AppliedLayout {
+            anchor_screen_id: anchor_screen_id.to_string(),
+            window_origin: eframe::egui::pos2(window_origin_x, base_y),
+            walk_bounds: crate::cat_layout::Rect::new(window_origin_x, 0.0, width, 64.0),
+            dock_mode: mode,
+            window_width: width,
+        }
+    }
+
+    #[test]
+    fn layout_changed_detects_anchor_screen_change_even_when_width_unchanged() {
+        let previous = make_layout(
+            "main",
+            0.0,
+            1092.0,
+            1200.0,
+            crate::cat_layout::DockPlacementMode::Bottom,
+        );
+        let next = make_layout(
+            "external",
+            1728.0,
+            1055.0,
+            1200.0,
+            crate::cat_layout::DockPlacementMode::Bottom,
+        );
+
+        assert!(layout_changed(Some(&previous), &next));
     }
 
     #[test]
