@@ -24,6 +24,9 @@ Vibe Cat is a macOS desktop pet that sits on your Dock and reacts to [Claude Cod
 - **Dual agent support** — track Claude Code (cc) and Codex (cx) simultaneously with independent main cats, togglable from the tray menu
 - **Menu bar status** — tray icon animates based on combined agent state
 - **Drag interaction** — drag the cat around with your mouse
+- **Multi-display Dock support** — the cat anchors to the screen that currently contains the Dock (not always the primary display)
+- **Auto-hide Dock support** — the cat re-snaps to the Dock edge when the Dock shows/hides
+- **Side Dock fallback (floor mode)** — when Dock is on the left/right, the cat still walks along the bottom edge of the usable desktop area; it does not stick to the vertical side and never enters the Dock-occupied strip
 
 ### Install
 
@@ -83,6 +86,9 @@ Vibe Cat 是一个 macOS 桌面宠物，趴在你的 Dock 上，实时反映 [Cl
 - **双助手支持** — 同时追踪 Claude Code (cc) 和 Codex (cx)，各自独立的主猫，可在托盘菜单中开关
 - **状态栏动画** — 托盘图标根据所有助手的综合状态变化
 - **拖拽交互** — 可以用鼠标拖拽猫
+- **多屏 Dock 支持** — 猫会锚定到 Dock 所在屏幕，而不是固定主屏
+- **自动隐藏 Dock** — Dock 显示/隐藏会触发重新贴边，猫会跟随重新贴近 Dock 边缘
+- **左/右 Dock 退化（floor mode）** — Dock 位于左/右侧时猫仍沿可见区域底边活动（不做竖向贴边），并且不会进入 Dock 占用区域
 
 ### 安装
 

@@ -1,5 +1,6 @@
 /target
 /docs
+/.worktrees
 /.claude
 说明.md
 CLAUDE.md
