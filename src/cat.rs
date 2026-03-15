@@ -920,7 +920,7 @@ impl UnifiedCatApp {
                                 anchor_screen_id: dock_screen.id.clone(),
                                 dock_left: dock_bounds.left,
                                 dock_right: dock_bounds.right,
-                                base_y: legacy_visible_bottom(dock_screen),
+                                base_y: legacy_visible_bottom(&screens, dock_screen),
                             });
                         }
                     }
@@ -1846,14 +1846,54 @@ fn resolve_dock_anchor_screen<'a>(
     screen_by_id(screens, &dock_bounds.anchor_screen_id).unwrap_or(fallback_screen)
 }
 
-/// 将 `visible_frame` 转换为当前窗口使用的“离屏幕顶部距离”语义。
+/// 计算虚拟桌面的全局顶部坐标。
+///
+/// 语义与边界：
+/// - 以所有屏幕 `frame` 的最高 `y + height` 作为虚拟桌面顶部。
+/// - 屏幕集合为空时返回 `None`，由调用方决定兜底策略。
+///
+/// 入参：
+/// - `screens`：同一轮采样得到的全量屏幕快照。
+///
+/// 返回：
+/// - `Some(f32)`：虚拟桌面全局顶部坐标（point）。
+/// - `None`：输入为空。
+///
+/// 错误处理与失败场景：
+/// - 不返回错误；仅用 `Option` 表达输入缺失。
+///
+/// 关键副作用：
+/// - 无。
+#[cfg(target_os = "macos")]
+fn desktop_global_top(screens: &[MacScreenSnapshot]) -> Option<f32> {
+    screens
+        .iter()
+        .map(|screen| screen.frame.y + screen.frame.height)
+        .reduce(f32::max)
+}
+
+/// 将 `visible_frame` 转换为当前窗口使用的“离虚拟桌面顶部距离”语义。
 ///
 /// 语义与边界：
 /// - 该公式与历史实现保持兼容：`top - visible_bottom`。
+/// - `top` 取虚拟桌面的全局顶部，避免锚点屏不在顶层时丢失垂直偏移。
 /// - 返回值供窗口 Y 坐标计算使用，不改变现有渲染逻辑。
+///
+/// 入参：
+/// - `screens`：同一轮采样得到的全量屏幕快照。
+/// - `screen`：Dock 所在锚点屏幕快照。
+///
+/// 返回：
+/// - 基于虚拟桌面全局顶部换算后的基线值（point）。
+///
+/// 错误处理与失败场景：
+/// - 当 `screens` 为空时，退化为锚点屏幕顶部，保持旧路径可用性。
+///
+/// 关键副作用：
+/// - 无。
 #[cfg(target_os = "macos")]
-fn legacy_visible_bottom(screen: &MacScreenSnapshot) -> f32 {
-    let top = screen.frame.y + screen.frame.height;
+fn legacy_visible_bottom(screens: &[MacScreenSnapshot], screen: &MacScreenSnapshot) -> f32 {
+    let top = desktop_global_top(screens).unwrap_or(screen.frame.y + screen.frame.height);
     top - screen.visible_frame.y
 }
 
@@ -2399,7 +2439,7 @@ pub fn run_cat() {
                 let dock_bounds = get_dock_bounds(&screens, fallback_screen);
                 let dock_screen =
                     resolve_dock_anchor_screen(&screens, fallback_screen, &dock_bounds);
-                let vis_bottom = legacy_visible_bottom(dock_screen);
+                let vis_bottom = legacy_visible_bottom(&screens, dock_screen);
                 let window_height = CELL_SIZE as f32 * SCALE + 22.0;
                 let x = dock_bounds.left;
                 let y = vis_bottom - window_height;
@@ -2503,12 +2543,34 @@ mod tests {
         let dock_screen = resolve_dock_anchor_screen(&screens, fallback_main, &dock_bounds);
 
         assert_eq!(
-            legacy_visible_bottom(&external),
-            legacy_visible_bottom(dock_screen)
+            legacy_visible_bottom(&screens, &external),
+            legacy_visible_bottom(&screens, dock_screen)
         );
         assert_ne!(
-            legacy_visible_bottom(fallback_main),
-            legacy_visible_bottom(dock_screen)
+            legacy_visible_bottom(&screens, fallback_main),
+            legacy_visible_bottom(&screens, dock_screen)
         );
+    }
+
+    #[test]
+    fn base_y_uses_virtual_desktop_top_when_anchor_screen_is_below_main() {
+        let main = make_screen(
+            "Built-in Retina",
+            crate::cat_layout::Rect::new(0.0, 0.0, 1728.0, 1117.0),
+            crate::cat_layout::Rect::new(0.0, 25.0, 1728.0, 1070.0),
+            2.0,
+            true,
+        );
+        let lower = make_screen(
+            "Lower External",
+            crate::cat_layout::Rect::new(0.0, -900.0, 1920.0, 900.0),
+            crate::cat_layout::Rect::new(0.0, -860.0, 1920.0, 860.0),
+            1.0,
+            false,
+        );
+        let screens = vec![main.clone(), lower.clone()];
+
+        let expected_base_y = (main.frame.y + main.frame.height) - lower.visible_frame.y;
+        assert_eq!(legacy_visible_bottom(&screens, &lower), expected_base_y);
     }
 }
