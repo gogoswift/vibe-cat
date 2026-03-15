@@ -1,5 +1,6 @@
 mod approve;
 mod cat;
+mod cat_layout;
 mod events;
 mod gui;
 mod installer;
