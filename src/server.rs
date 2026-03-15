@@ -62,30 +62,28 @@ fn map_codex_event(
             "Codex API request".to_string(),
             tool_name.map(|s| s.to_string()),
         ),
-        "codex.sse_event" | "codex.websocket_event" => {
-            match event_kind {
-                Some("response.completed") | Some("[DONE]") => (
-                    "Stop".to_string(),
-                    format!("Codex response completed"),
-                    tool_name.map(|s| s.to_string()),
-                ),
-                Some("response.failed") => (
-                    "Stop".to_string(),
-                    format!("Codex response failed"),
-                    tool_name.map(|s| s.to_string()),
-                ),
-                Some(kind) => (
-                    "sse_event".to_string(),
-                    format!("Codex: {}", kind),
-                    tool_name.map(|s| s.to_string()),
-                ),
-                None => (
-                    "sse_event".to_string(),
-                    "Codex SSE event".to_string(),
-                    tool_name.map(|s| s.to_string()),
-                ),
-            }
-        }
+        "codex.sse_event" | "codex.websocket_event" => match event_kind {
+            Some("response.completed") | Some("[DONE]") => (
+                "Stop".to_string(),
+                format!("Codex response completed"),
+                tool_name.map(|s| s.to_string()),
+            ),
+            Some("response.failed") => (
+                "Stop".to_string(),
+                format!("Codex response failed"),
+                tool_name.map(|s| s.to_string()),
+            ),
+            Some(kind) => (
+                "sse_event".to_string(),
+                format!("Codex: {}", kind),
+                tool_name.map(|s| s.to_string()),
+            ),
+            None => (
+                "sse_event".to_string(),
+                "Codex SSE event".to_string(),
+                tool_name.map(|s| s.to_string()),
+            ),
+        },
         "codex.websocket_request" => (
             "api_request".to_string(),
             "Codex WebSocket request".to_string(),
@@ -102,42 +100,40 @@ fn map_codex_event(
                         Some(tn.to_string()),
                     )
                 }
-                _ => {
-                    match tool_name {
-                        Some("spawn_agent") => {
-                            let dec = decision.unwrap_or("unknown");
-                            (
-                                "SubagentStart".to_string(),
-                                format!("Codex subagent spawned ({})", dec),
-                                Some("spawn_agent".to_string()),
-                            )
-                        }
-                        Some("close_agent") => {
-                            let dec = decision.unwrap_or("unknown");
-                            (
-                                "SubagentStop".to_string(),
-                                format!("Codex subagent stopped ({})", dec),
-                                Some("close_agent".to_string()),
-                            )
-                        }
-                        Some(tn) => {
-                            let dec = decision.unwrap_or("unknown");
-                            (
-                                "tool_decision".to_string(),
-                                format!("{}: {}", tn, dec),
-                                Some(tn.to_string()),
-                            )
-                        }
-                        None => {
-                            let dec = decision.unwrap_or("unknown");
-                            (
-                                "tool_decision".to_string(),
-                                format!("unknown: {}", dec),
-                                None,
-                            )
-                        }
+                _ => match tool_name {
+                    Some("spawn_agent") => {
+                        let dec = decision.unwrap_or("unknown");
+                        (
+                            "SubagentStart".to_string(),
+                            format!("Codex subagent spawned ({})", dec),
+                            Some("spawn_agent".to_string()),
+                        )
                     }
-                }
+                    Some("close_agent") => {
+                        let dec = decision.unwrap_or("unknown");
+                        (
+                            "SubagentStop".to_string(),
+                            format!("Codex subagent stopped ({})", dec),
+                            Some("close_agent".to_string()),
+                        )
+                    }
+                    Some(tn) => {
+                        let dec = decision.unwrap_or("unknown");
+                        (
+                            "tool_decision".to_string(),
+                            format!("{}: {}", tn, dec),
+                            Some(tn.to_string()),
+                        )
+                    }
+                    None => {
+                        let dec = decision.unwrap_or("unknown");
+                        (
+                            "tool_decision".to_string(),
+                            format!("unknown: {}", dec),
+                            None,
+                        )
+                    }
+                },
             }
         }
         "codex.tool_result" => {
@@ -166,9 +162,8 @@ fn process_event(
     event_kind: Option<&str>,
     mut raw_map: serde_json::Map<String, Value>,
 ) {
-    let (event_type, summary, adjusted_tool_name) = map_codex_event(
-        event_name, tool_name, decision, call_id, event_kind,
-    );
+    let (event_type, summary, adjusted_tool_name) =
+        map_codex_event(event_name, tool_name, decision, call_id, event_kind);
 
     // SubagentStart/SubagentStop 需要 agent_id
     if event_type == "SubagentStart" || event_type == "SubagentStop" {
@@ -207,10 +202,10 @@ fn receive_logs_protobuf(body: Bytes) -> StatusCode {
             for log_record in &scope_logs.log_records {
                 let attrs = &log_record.attributes;
 
-                let event_name = extract_attr(attrs, "event.name")
-                    .unwrap_or_else(|| "unknown".to_string());
-                let conversation_id = extract_attr(attrs, "conversation.id")
-                    .unwrap_or_else(|| "unknown".to_string());
+                let event_name =
+                    extract_attr(attrs, "event.name").unwrap_or_else(|| "unknown".to_string());
+                let conversation_id =
+                    extract_attr(attrs, "conversation.id").unwrap_or_else(|| "unknown".to_string());
                 let tool_name = extract_attr(attrs, "tool_name");
                 let decision = extract_attr(attrs, "decision");
                 let call_id = extract_attr(attrs, "call_id");
@@ -282,8 +277,8 @@ fn receive_logs_json(body: &Bytes) -> StatusCode {
                     .and_then(|v| v.as_array())
                     .unwrap_or(&empty_attrs);
 
-                let event_name = extract_json_attr(attrs, "event.name")
-                    .unwrap_or_else(|| "unknown".to_string());
+                let event_name =
+                    extract_json_attr(attrs, "event.name").unwrap_or_else(|| "unknown".to_string());
                 let conversation_id = extract_json_attr(attrs, "conversation.id")
                     .unwrap_or_else(|| "unknown".to_string());
                 let tool_name = extract_json_attr(attrs, "tool_name");
@@ -304,23 +299,24 @@ fn receive_logs_json(body: &Bytes) -> StatusCode {
                         None => continue,
                     };
                     // OTLP JSON: stringValue, intValue (as string), doubleValue, boolValue
-                    let json_val = if let Some(s) = value.get("stringValue").and_then(|x| x.as_str()) {
-                        json!(s)
-                    } else if let Some(s) = value.get("intValue").and_then(|x| x.as_str()) {
-                        // OTLP JSON 中 int64 编码为字符串
-                        match s.parse::<i64>() {
-                            Ok(i) => json!(i),
-                            Err(_) => json!(s),
-                        }
-                    } else if let Some(i) = value.get("intValue").and_then(|x| x.as_i64()) {
-                        json!(i)
-                    } else if let Some(d) = value.get("doubleValue").and_then(|x| x.as_f64()) {
-                        json!(d)
-                    } else if let Some(b) = value.get("boolValue").and_then(|x| x.as_bool()) {
-                        json!(b)
-                    } else {
-                        continue;
-                    };
+                    let json_val =
+                        if let Some(s) = value.get("stringValue").and_then(|x| x.as_str()) {
+                            json!(s)
+                        } else if let Some(s) = value.get("intValue").and_then(|x| x.as_str()) {
+                            // OTLP JSON 中 int64 编码为字符串
+                            match s.parse::<i64>() {
+                                Ok(i) => json!(i),
+                                Err(_) => json!(s),
+                            }
+                        } else if let Some(i) = value.get("intValue").and_then(|x| x.as_i64()) {
+                            json!(i)
+                        } else if let Some(d) = value.get("doubleValue").and_then(|x| x.as_f64()) {
+                            json!(d)
+                        } else if let Some(b) = value.get("boolValue").and_then(|x| x.as_bool()) {
+                            json!(b)
+                        } else {
+                            continue;
+                        };
                     raw_map.insert(key.to_string(), json_val);
                 }
 
@@ -364,7 +360,10 @@ pub async fn run_server(port: u16) {
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[server] Cannot bind to 127.0.0.1:{} ({}). Another instance may be running.", port, e);
+            eprintln!(
+                "[server] Cannot bind to 127.0.0.1:{} ({}). Another instance may be running.",
+                port, e
+            );
             return;
         }
     };

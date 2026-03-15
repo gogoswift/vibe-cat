@@ -103,11 +103,7 @@ impl eframe::App for MonitorApp {
                     .show_ui(ui, |ui| {
                         for &(name, cn) in EVENT_TYPES {
                             let label = format!("{} [{}]", name, cn);
-                            ui.selectable_value(
-                                &mut self.selected_filter,
-                                name.to_string(),
-                                label,
-                            );
+                            ui.selectable_value(&mut self.selected_filter, name.to_string(), label);
                         }
                     });
 
@@ -137,10 +133,7 @@ impl eframe::App for MonitorApp {
             // 过滤
             let filtered: Vec<&LogEntry> = entries
                 .iter()
-                .filter(|e| {
-                    self.selected_filter == "All"
-                        || e.event_type == self.selected_filter
-                })
+                .filter(|e| self.selected_filter == "All" || e.event_type == self.selected_filter)
                 .collect();
 
             let text_style = egui::TextStyle::Monospace;
@@ -167,8 +160,8 @@ impl eframe::App for MonitorApp {
 
                                 // source 标签 (在时间之后，事件类型之前)
                                 let source_color = match entry.source.as_str() {
-                                    "cx" => egui::Color32::from_rgb(200, 100, 220),  // 紫色
-                                    _ => egui::Color32::from_rgb(80, 200, 220),       // 青色
+                                    "cx" => egui::Color32::from_rgb(200, 100, 220), // 紫色
+                                    _ => egui::Color32::from_rgb(80, 200, 220),     // 青色
                                 };
                                 let source_label = match entry.source.as_str() {
                                     "cx" => "CX",
@@ -183,11 +176,9 @@ impl eframe::App for MonitorApp {
                                 // 事件类型
                                 let color = event_color(&entry.event_type);
                                 ui.label(
-                                    egui::RichText::new(
-                                        format!("{:>22}", entry.event_type),
-                                    )
-                                    .monospace()
-                                    .color(color),
+                                    egui::RichText::new(format!("{:>22}", entry.event_type))
+                                        .monospace()
+                                        .color(color),
                                 );
 
                                 // 工具名
@@ -227,7 +218,11 @@ fn spawn_log_watcher(entries: Arc<Mutex<Vec<LogEntry>>>, filter: Option<String>)
         let file = File::open(&log_path).expect("Cannot open log file");
         let reader = BufReader::new(&file);
         let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
-        let start = if lines.len() > 50 { lines.len() - 50 } else { 0 };
+        let start = if lines.len() > 50 {
+            lines.len() - 50
+        } else {
+            0
+        };
 
         {
             let mut locked = entries.lock().unwrap();
@@ -274,10 +269,7 @@ fn spawn_log_watcher(entries: Arc<Mutex<Vec<LogEntry>>>, filter: Option<String>)
 fn should_show(entry: &LogEntry, filter: Option<&str>) -> bool {
     match filter {
         None => true,
-        Some(f) => entry
-            .event_type
-            .to_lowercase()
-            .contains(&f.to_lowercase()),
+        Some(f) => entry.event_type.to_lowercase().contains(&f.to_lowercase()),
     }
 }
 
@@ -309,7 +301,9 @@ pub fn run_gui(filter: Option<&str>) {
         Box::new(move |cc| {
             // 加载中文字体
             let mut fonts = egui::FontDefinitions::default();
-            if let Ok(font_data) = std::fs::read("/System/Library/Fonts/Supplemental/Arial Unicode.ttf") {
+            if let Ok(font_data) =
+                std::fs::read("/System/Library/Fonts/Supplemental/Arial Unicode.ttf")
+            {
                 fonts.font_data.insert(
                     "pingfang".to_owned(),
                     egui::FontData::from_owned(font_data).into(),

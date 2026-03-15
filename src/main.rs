@@ -73,7 +73,6 @@ enum Commands {
         #[arg(long, default_value = "4318")]
         port: u16,
     },
-
 }
 
 impl Commands {
@@ -81,7 +80,11 @@ impl Commands {
     fn needs_auto_setup(&self) -> bool {
         matches!(
             self,
-            Commands::Gui { .. } | Commands::Tail { .. } | Commands::Status | Commands::Cat | Commands::Server { .. }
+            Commands::Gui { .. }
+                | Commands::Tail { .. }
+                | Commands::Status
+                | Commands::Cat
+                | Commands::Server { .. }
         )
     }
 }
