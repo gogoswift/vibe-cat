@@ -525,10 +525,7 @@ impl HookEvent {
                 )
             }
             HookEvent::PostToolUse(d) => {
-                format!(
-                    "{} completed",
-                    d.tool_name.as_deref().unwrap_or("unknown")
-                )
+                format!("{} completed", d.tool_name.as_deref().unwrap_or("unknown"))
             }
             HookEvent::PostToolUseFailure(d) => {
                 format!(
@@ -588,10 +585,7 @@ impl HookEvent {
                 )
             }
             HookEvent::PreCompact(d) => {
-                format!(
-                    "Compaction ({})",
-                    d.trigger.as_deref().unwrap_or("unknown")
-                )
+                format!("Compaction ({})", d.trigger.as_deref().unwrap_or("unknown"))
             }
             HookEvent::SessionEnd(d) => {
                 format!(

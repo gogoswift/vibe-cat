@@ -76,7 +76,12 @@ pub fn handle_approve() {
         "timestamp": chrono::Local::now().to_rfc3339(),
     });
 
-    if fs::write(pending_path(), serde_json::to_string_pretty(&pending).unwrap()).is_err() {
+    if fs::write(
+        pending_path(),
+        serde_json::to_string_pretty(&pending).unwrap(),
+    )
+    .is_err()
+    {
         // 写失败，默认放行
         return;
     }

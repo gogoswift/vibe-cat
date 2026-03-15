@@ -119,7 +119,10 @@ pub fn write_codex_event(
     let mut line = serde_json::to_string(&entry)?;
     line.push('\n');
     let log_path = log_file_path();
-    let mut file = OpenOptions::new().create(true).append(true).open(&log_path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
     file.lock_exclusive()?;
     file.write_all(line.as_bytes())?;
     file.unlock()?;

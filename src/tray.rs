@@ -9,8 +9,8 @@
 #![cfg(target_os = "macos")]
 
 use std::ptr;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::OnceLock;
 
 use image::{DynamicImage, GenericImageView, ImageEncoder, RgbaImage};
 use objc2::msg_send;
@@ -18,9 +18,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
 use objc2::sel;
 use objc2::ClassType;
-use objc2_app_kit::{
-    NSApplication, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
-};
+use objc2_app_kit::{NSApplication, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem};
 use objc2_foundation::{MainThreadMarker, NSData, NSSize, NSString};
 
 use crate::cat::ClaudeState;
@@ -46,16 +44,96 @@ struct TrayAnimDef {
 
 /// 裁剪参数与参考项目完全一致
 const TRAY_ANIMS: &[TrayAnimDef] = &[
-    TrayAnimDef { name: "sit1",    row: 0, frames: 4, x: 9,  y: 20, w: 12, h: 12 },
-    TrayAnimDef { name: "sit2",    row: 1, frames: 4, x: 9,  y: 20, w: 12, h: 12 },
-    TrayAnimDef { name: "sit3",    row: 2, frames: 4, x: 9,  y: 20, w: 13, h: 12 },
-    TrayAnimDef { name: "sit4",    row: 3, frames: 4, x: 9,  y: 20, w: 13, h: 12 },
-    TrayAnimDef { name: "run1",    row: 4, frames: 8, x: 7,  y: 20, w: 17, h: 12 },
-    TrayAnimDef { name: "run2",    row: 5, frames: 8, x: 7,  y: 19, w: 17, h: 13 },
-    TrayAnimDef { name: "sleep",   row: 6, frames: 4, x: 8,  y: 24, w: 16, h: 8  },
-    TrayAnimDef { name: "play",    row: 7, frames: 6, x: 10, y: 20, w: 15, h: 12 },
-    TrayAnimDef { name: "pounce",  row: 8, frames: 7, x: 9,  y: 14, w: 15, h: 18 },
-    TrayAnimDef { name: "stretch", row: 9, frames: 8, x: 7,  y: 21, w: 17, h: 11 },
+    TrayAnimDef {
+        name: "sit1",
+        row: 0,
+        frames: 4,
+        x: 9,
+        y: 20,
+        w: 12,
+        h: 12,
+    },
+    TrayAnimDef {
+        name: "sit2",
+        row: 1,
+        frames: 4,
+        x: 9,
+        y: 20,
+        w: 12,
+        h: 12,
+    },
+    TrayAnimDef {
+        name: "sit3",
+        row: 2,
+        frames: 4,
+        x: 9,
+        y: 20,
+        w: 13,
+        h: 12,
+    },
+    TrayAnimDef {
+        name: "sit4",
+        row: 3,
+        frames: 4,
+        x: 9,
+        y: 20,
+        w: 13,
+        h: 12,
+    },
+    TrayAnimDef {
+        name: "run1",
+        row: 4,
+        frames: 8,
+        x: 7,
+        y: 20,
+        w: 17,
+        h: 12,
+    },
+    TrayAnimDef {
+        name: "run2",
+        row: 5,
+        frames: 8,
+        x: 7,
+        y: 19,
+        w: 17,
+        h: 13,
+    },
+    TrayAnimDef {
+        name: "sleep",
+        row: 6,
+        frames: 4,
+        x: 8,
+        y: 24,
+        w: 16,
+        h: 8,
+    },
+    TrayAnimDef {
+        name: "play",
+        row: 7,
+        frames: 6,
+        x: 10,
+        y: 20,
+        w: 15,
+        h: 12,
+    },
+    TrayAnimDef {
+        name: "pounce",
+        row: 8,
+        frames: 7,
+        x: 9,
+        y: 14,
+        w: 15,
+        h: 18,
+    },
+    TrayAnimDef {
+        name: "stretch",
+        row: 9,
+        frames: 8,
+        x: 7,
+        y: 21,
+        w: 17,
+        h: 11,
+    },
 ];
 
 const ANIM_SLEEP: usize = 6;
@@ -69,10 +147,26 @@ struct ActiveAnimEntry {
 }
 
 const ACTIVE_ANIMS: &[ActiveAnimEntry] = &[
-    ActiveAnimEntry { index: 0, weight: 1, duration_ms: 15000 },
-    ActiveAnimEntry { index: 1, weight: 1, duration_ms: 15000 },
-    ActiveAnimEntry { index: 2, weight: 1, duration_ms: 15000 },
-    ActiveAnimEntry { index: 3, weight: 1, duration_ms: 15000 },
+    ActiveAnimEntry {
+        index: 0,
+        weight: 1,
+        duration_ms: 15000,
+    },
+    ActiveAnimEntry {
+        index: 1,
+        weight: 1,
+        duration_ms: 15000,
+    },
+    ActiveAnimEntry {
+        index: 2,
+        weight: 1,
+        duration_ms: 15000,
+    },
+    ActiveAnimEntry {
+        index: 3,
+        weight: 1,
+        duration_ms: 15000,
+    },
 ];
 
 // ── 全局状态（点击处理用） ──
@@ -193,26 +287,11 @@ fn register_tray_handler_class() -> &'static AnyClass {
         let superclass = AnyClass::get("NSObject").unwrap();
         let mut builder = ClassBuilder::new("ClaudeCatTrayHandler", superclass).unwrap();
         unsafe {
-            builder.add_method(
-                sel!(trayClicked:),
-                tray_clicked as extern "C" fn(_, _, _),
-            );
-            builder.add_method(
-                sel!(toggleCC:),
-                toggle_cc as extern "C" fn(_, _, _),
-            );
-            builder.add_method(
-                sel!(toggleCX:),
-                toggle_cx as extern "C" fn(_, _, _),
-            );
-            builder.add_method(
-                sel!(openGui:),
-                open_gui as extern "C" fn(_, _, _),
-            );
-            builder.add_method(
-                sel!(quitApp:),
-                quit_app as extern "C" fn(_, _, _),
-            );
+            builder.add_method(sel!(trayClicked:), tray_clicked as extern "C" fn(_, _, _));
+            builder.add_method(sel!(toggleCC:), toggle_cc as extern "C" fn(_, _, _));
+            builder.add_method(sel!(toggleCX:), toggle_cx as extern "C" fn(_, _, _));
+            builder.add_method(sel!(openGui:), open_gui as extern "C" fn(_, _, _));
+            builder.add_method(sel!(quitApp:), quit_app as extern "C" fn(_, _, _));
         }
         builder.register()
     })
@@ -224,12 +303,20 @@ fn update_menu_check_marks() {
         let cc_ptr = CC_MENU_ITEM_PTR.load(Ordering::Acquire);
         if !cc_ptr.is_null() {
             // NSControlStateValueOn = 1, NSControlStateValueOff = 0
-            let state: isize = if CC_ENABLED.load(Ordering::Relaxed) { 1 } else { 0 };
+            let state: isize = if CC_ENABLED.load(Ordering::Relaxed) {
+                1
+            } else {
+                0
+            };
             let _: () = msg_send![cc_ptr, setState: state];
         }
         let cx_ptr = CX_MENU_ITEM_PTR.load(Ordering::Acquire);
         if !cx_ptr.is_null() {
-            let state: isize = if CX_ENABLED.load(Ordering::Relaxed) { 1 } else { 0 };
+            let state: isize = if CX_ENABLED.load(Ordering::Relaxed) {
+                1
+            } else {
+                0
+            };
             let _: () = msg_send![cx_ptr, setState: state];
         }
     }
@@ -286,7 +373,12 @@ fn extract_tray_frame_as_png(sprite: &DynamicImage, anim: &TrayAnimDef, frame_id
     let mut png_buf = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut png_buf);
     encoder
-        .write_image(canvas.as_raw(), canvas_w, canvas_h, image::ExtendedColorType::Rgba8)
+        .write_image(
+            canvas.as_raw(),
+            canvas_w,
+            canvas_h,
+            image::ExtendedColorType::Rgba8,
+        )
         .expect("PNG encode failed");
     png_buf
 }
@@ -300,8 +392,8 @@ unsafe fn png_to_nsimage(png: &[u8]) -> Retained<NSImage> {
     let logical_h = canvas_h as f64 / 2.0;
 
     let data = NSData::with_bytes(png);
-    let image = NSImage::initWithData(NSImage::alloc(), &data)
-        .expect("Failed to create NSImage from PNG");
+    let image =
+        NSImage::initWithData(NSImage::alloc(), &data).expect("Failed to create NSImage from PNG");
     image.setSize(NSSize::new(logical_w, logical_h));
     image.setTemplate(false);
     image
@@ -512,10 +604,7 @@ fn now_ms() -> u64 {
 }
 
 fn weighted_random_anim(current: usize) -> (usize, u64) {
-    let pool: Vec<&ActiveAnimEntry> = ACTIVE_ANIMS
-        .iter()
-        .filter(|a| a.index != current)
-        .collect();
+    let pool: Vec<&ActiveAnimEntry> = ACTIVE_ANIMS.iter().filter(|a| a.index != current).collect();
 
     let total_weight: u32 = pool.iter().map(|a| a.weight).sum();
     if total_weight == 0 {

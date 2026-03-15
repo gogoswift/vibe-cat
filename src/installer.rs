@@ -108,8 +108,7 @@ pub fn install(scope: InstallScope) -> Result<String, String> {
     let backup_path = if target_path.exists() {
         let timestamp = Local::now().format("%Y%m%d_%H%M%S");
         let backup = target_path.with_extension(format!("backup.{}.json", timestamp));
-        fs::copy(&target_path, &backup)
-            .map_err(|e| format!("Cannot backup file: {}", e))?;
+        fs::copy(&target_path, &backup).map_err(|e| format!("Cannot backup file: {}", e))?;
         Some(backup)
     } else {
         None
@@ -255,16 +254,14 @@ fn ensure_codex_config() -> Result<bool, String> {
 
     // 确保目录存在
     if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create .codex directory: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Cannot create .codex directory: {}", e))?;
     }
 
     // 备份已有配置
     if config_path.exists() {
         let timestamp = Local::now().format("%Y%m%d_%H%M%S");
         let backup = config_path.with_extension(format!("backup.{}.toml", timestamp));
-        fs::copy(&config_path, &backup)
-            .map_err(|e| format!("Cannot backup config.toml: {}", e))?;
+        fs::copy(&config_path, &backup).map_err(|e| format!("Cannot backup config.toml: {}", e))?;
     }
 
     // 读取已有配置或创建空配置
@@ -307,8 +304,7 @@ fn ensure_codex_config() -> Result<bool, String> {
     // 写入文件
     let output =
         toml::to_string_pretty(&config).map_err(|e| format!("Cannot serialize TOML: {}", e))?;
-    fs::write(&config_path, output)
-        .map_err(|e| format!("Cannot write config.toml: {}", e))?;
+    fs::write(&config_path, output).map_err(|e| format!("Cannot write config.toml: {}", e))?;
 
     Ok(true)
 }

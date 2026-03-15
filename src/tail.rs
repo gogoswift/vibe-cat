@@ -81,10 +81,7 @@ pub fn tail_log(filter: Option<&str>) {
         return;
     }
 
-    println!(
-        "{}",
-        format!("Tailing: {}", log_path.display()).dimmed()
-    );
+    println!("{}", format!("Tailing: {}", log_path.display()).dimmed());
     if let Some(f) = filter {
         println!("{}", format!("Filter: {}", f).dimmed());
     }
@@ -94,7 +91,11 @@ pub fn tail_log(filter: Option<&str>) {
     let file = File::open(&log_path).expect("Cannot open log file");
     let reader = BufReader::new(&file);
     let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
-    let start = if lines.len() > 10 { lines.len() - 10 } else { 0 };
+    let start = if lines.len() > 10 {
+        lines.len() - 10
+    } else {
+        0
+    };
 
     for line in &lines[start..] {
         if let Ok(entry) = serde_json::from_str::<LogEntry>(line) {

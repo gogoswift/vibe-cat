@@ -34,6 +34,21 @@ cd vibe-cat
 # Built: target/release/bundle/osx/VibeCat.app
 ```
 
+### Development (Auto Restart)
+
+```bash
+# one-time setup
+cargo install cargo-watch
+
+# default: watch src/Cargo.toml and run `cargo run -- cat`
+./dev.sh
+```
+
+```bash
+# pass custom cargo-watch args (example: run GUI instead of cat window)
+./dev.sh -x 'run -- gui'
+```
+
 ### Cat Behavior
 
 | AI Agent State | Cat Animation |
@@ -76,6 +91,21 @@ git clone https://github.com/gogoswift/vibe-cat.git
 cd vibe-cat
 ./build-app.sh
 # Built: target/release/bundle/osx/VibeCat.app
+```
+
+### 开发模式（自动重启）
+
+```bash
+# 首次使用先安装 cargo-watch
+cargo install cargo-watch
+
+# 默认监听 src/Cargo.toml，并执行 `cargo run -- cat`
+./dev.sh
+```
+
+```bash
+# 传递自定义 cargo-watch 参数（示例：启动 GUI）
+./dev.sh -x 'run -- gui'
 ```
 
 ### 猫的行为

@@ -1,3 +1,20 @@
+//! 桌面像素猫渲染与状态同步模块。
+//!
+//! 职责与边界：
+//! - 负责加载精灵、推进动画、处理拖拽交互，并将事件日志映射为猫咪状态。
+//! - 负责依据 Dock 区域更新窗口位置与宽度，让猫停靠在 Dock 上方。
+//! - 不负责日志采集、OTel HTTP 接收与安装流程（这些由其他模块处理）。
+//!
+//! 关键副作用：
+//! - 调用窗口相关 API 改变位置、尺寸、阴影与鼠标穿透行为。
+//! - 周期性启动后台线程刷新 Dock 边界估算结果。
+//! - 在 GUI 启动时拉起 OTel 接收线程（见 `run_cat`）。
+//!
+//! 关键依赖与约束：
+//! - 依赖 `eframe/egui`、`objc2` 与 `image`。
+//! - AppKit 的 `NSScreen` 查询必须在主线程执行；后台线程只消费已采样数据。
+//! - Dock 定位与托盘逻辑仅在 macOS 生效。
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -819,7 +836,24 @@ impl UnifiedCatApp {
         self.debug_subagents_active = !self.debug_subagents_active;
     }
 
-    /// 启动后台线程刷新 Dock 边界（非阻塞）
+    /// 启动一次非阻塞 Dock 边界刷新任务。
+    ///
+    /// 语义与边界：
+    /// - 仅负责提交刷新任务，不直接更新窗口位置；实际应用由 `apply_dock_result` 完成。
+    /// - 若已有刷新任务在跑，直接返回，避免并发刷新导致的状态抖动。
+    ///
+    /// 入参：
+    /// - `&self`：读取刷新状态并提交后台任务；不直接修改 UI。
+    ///
+    /// 返回：
+    /// - 无返回值；计算结果通过 `dock_result` 共享状态回传。
+    ///
+    /// 错误处理与失败场景：
+    /// - 屏幕采样失败时会跳过本轮刷新，并在任务结束后恢复 `dock_refreshing` 标记。
+    ///
+    /// 关键副作用：
+    /// - 在主线程读取 `NSScreen`（避免跨线程访问 AppKit）。
+    /// - 启动后台线程计算 Dock 边界并回写共享结果。
     fn start_dock_refresh_bg(&self) {
         let mut refreshing = self.dock_refreshing.lock().unwrap();
         if *refreshing {
@@ -827,20 +861,26 @@ impl UnifiedCatApp {
         }
         *refreshing = true;
 
+        // AppKit 需主线程调用：这里只采样屏幕信息，后台线程仅做 Dock 边界计算。
+        #[cfg(target_os = "macos")]
+        let screen_info = get_macos_screen_info();
+
         let result_arc = Arc::clone(&self.dock_result);
         let refreshing_arc = Arc::clone(&self.dock_refreshing);
 
         std::thread::spawn(move || {
             #[cfg(target_os = "macos")]
             {
-                if let Some((screen_w, visible_bottom, _)) = get_macos_screen_info() {
+                if let Some((screen_w, visible_bottom, _)) = screen_info {
                     let (dl, dr) = get_dock_bounds(screen_w, visible_bottom);
-                    let mut result = result_arc.lock().unwrap();
-                    *result = Some(DockBoundsResult {
-                        dock_left: dl,
-                        dock_right: dr,
-                        base_y: visible_bottom,
-                    });
+                    if dr > dl {
+                        let mut result = result_arc.lock().unwrap();
+                        *result = Some(DockBoundsResult {
+                            dock_left: dl,
+                            dock_right: dr,
+                            base_y: visible_bottom,
+                        });
+                    }
                 }
             }
             let mut refreshing = refreshing_arc.lock().unwrap();
