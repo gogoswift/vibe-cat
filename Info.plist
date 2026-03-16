@@ -7,11 +7,11 @@
   <key>CFBundleDisplayName</key>
   <string>VibeCat</string>
   <key>CFBundleExecutable</key>
-  <string>claude-hook-monitor</string>
+  <string>vibe-cat</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon.icns</string>
   <key>CFBundleIdentifier</key>
-  <string>com.eko.claude-hook-monitor</string>
+  <string>com.eko.vibe-cat</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>

@@ -17,7 +17,7 @@ pub enum InstallScope {
 /// 获取当前二进制的绝对路径
 pub fn get_binary_path() -> String {
     env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("claude-hook-monitor"))
+        .unwrap_or_else(|_| PathBuf::from("vibe-cat"))
         .to_string_lossy()
         .to_string()
 }

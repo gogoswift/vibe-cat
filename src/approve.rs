@@ -11,14 +11,14 @@ use crate::logger;
 /// pending 文件路径
 fn pending_path() -> PathBuf {
     let home = dirs::home_dir().expect("Cannot determine home directory");
-    home.join(".claude-hook-monitor")
+    home.join(".vibe-cat")
         .join("pending-approval.json")
 }
 
 /// response 文件路径
 fn response_path() -> PathBuf {
     let home = dirs::home_dir().expect("Cannot determine home directory");
-    home.join(".claude-hook-monitor")
+    home.join(".vibe-cat")
         .join("approval-response.json")
 }
 

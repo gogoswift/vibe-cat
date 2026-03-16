@@ -75,7 +75,7 @@ pub fn tail_log(filter: Option<&str>) {
     if !log_path.exists() {
         eprintln!(
             "{}",
-            "No log file found. Run 'claude-hook-monitor install' first.".red()
+            "No log file found. Run 'vibe-cat install' first.".red()
         );
         eprintln!("Expected: {}", log_path.display());
         return;
@@ -152,7 +152,7 @@ pub fn show_status() {
     if !log_path.exists() {
         eprintln!(
             "{}",
-            "No log file found. Run 'claude-hook-monitor install' first.".red()
+            "No log file found. Run 'vibe-cat install' first.".red()
         );
         return;
     }
