@@ -30,7 +30,7 @@ fn default_source() -> String {
 /// 获取日志文件路径
 pub fn log_file_path() -> PathBuf {
     let home = dirs::home_dir().expect("Cannot determine home directory");
-    home.join(".claude-hook-monitor").join("events.jsonl")
+    home.join(".vibe-cat").join("events.jsonl")
 }
 
 /// 确保日志目录存在

@@ -2158,14 +2158,12 @@ impl eframe::App for UnifiedCatApp {
         } else {
             egui::Rect::NOTHING
         };
-        let combined_rect = if cc_rect == egui::Rect::NOTHING {
-            cx_rect
-        } else if cx_rect == egui::Rect::NOTHING {
-            cc_rect
-        } else {
-            cc_rect.union(cx_rect)
-        };
-        update_mouse_passthrough(combined_rect, either_dragging);
+        let cat_rects: Vec<egui::Rect> = [cc_rect, cx_rect]
+            .iter()
+            .copied()
+            .filter(|r| *r != egui::Rect::NOTHING)
+            .collect();
+        update_mouse_passthrough(&cat_rects, either_dragging);
 
         // ---- 绘制 ----
         let panel_frame = egui::Frame::NONE.fill(egui::Color32::TRANSPARENT);
@@ -3750,7 +3748,7 @@ fn setup_window_appearance() {}
 /// - 鼠标在透明区域时：开启穿透，点击可到达下方窗口/Dock
 /// - 正在拖拽时：始终关闭穿透
 #[cfg(target_os = "macos")]
-fn update_mouse_passthrough(cat_rect: egui::Rect, is_dragging: bool) {
+fn update_mouse_passthrough(cat_rects: &[egui::Rect], is_dragging: bool) {
     use objc2::runtime::AnyClass;
     use objc2_foundation::{CGPoint, CGRect};
 
@@ -3775,17 +3773,19 @@ fn update_mouse_passthrough(cat_rect: egui::Rect, is_dragging: bool) {
         // 转换为窗口内坐标（egui 坐标系：原点左上，y 向下）
         let local_x = (mouse.x - frame.origin.x) as f32;
         let local_y = (frame.size.height - (mouse.y - frame.origin.y)) as f32;
+        let mouse_pos = egui::pos2(local_x, local_y);
 
-        // 检查是否在猫精灵范围内（加 10px 外扩以提高命中手感）
-        let padded = cat_rect.expand(10.0);
-        let over_cat = padded.contains(egui::pos2(local_x, local_y));
+        // 分别检查每只猫的区域，任一命中即不穿透
+        let over_any_cat = cat_rects
+            .iter()
+            .any(|r| r.contains(mouse_pos));
 
-        let _: () = objc2::msg_send![window, setIgnoresMouseEvents: !over_cat];
+        let _: () = objc2::msg_send![window, setIgnoresMouseEvents: !over_any_cat];
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn update_mouse_passthrough(_cat_rect: egui::Rect, _is_dragging: bool) {}
+fn update_mouse_passthrough(_cat_rects: &[egui::Rect], _is_dragging: bool) {}
 
 // ============================================================
 // 入口函数

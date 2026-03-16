@@ -1,5 +1,5 @@
 [package]
-name = "claude-hook-monitor"
+name = "vibe-cat"
 version = "0.1.0"
 edition = "2021"
 
@@ -33,7 +33,7 @@ objc2-foundation = "0.2"
 
 [package.metadata.bundle]
 name = "VibeCat"
-identifier = "com.eko.claude-hook-monitor"
+identifier = "com.eko.vibe-cat"
 category = "Developer Tool"
 short_description = "Claude Code Hook 事件监听器"
 osx_minimum_system_version = "12.0"

@@ -39,7 +39,7 @@ use colored::*;
 /// - 不负责根据语言动态改写帮助文案；该行为由运行时 builder 完成。
 #[derive(Parser)]
 #[command(
-    name = "claude-hook-monitor",
+    name = "vibe-cat",
     about = "Claude Code Hook 事件监听器 - 被动记录所有 hook 事件",
     version
 )]
@@ -459,7 +459,7 @@ fn handle_install(scope: &str) {
             println!("{}", msg);
             println!("\n{}", "Next steps:".bold());
             println!("  1. Restart Claude Code to load new hooks");
-            println!("  2. Run: claude-hook-monitor tail");
+            println!("  2. Run: vibe-cat tail");
             println!("  3. Use Claude Code normally and watch events flow");
         }
         Err(e) => {
