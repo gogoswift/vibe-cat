@@ -3862,7 +3862,8 @@ fn setup_window_appearance() {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     };
-    use windows::Win32::Graphics::Dwm::{DwmExtendFrameIntoClientArea, MARGINS};
+    use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+    use windows::Win32::UI::Controls::MARGINS;
 
     let hwnd = find_eframe_window();
     if let Some(hwnd) = hwnd {
