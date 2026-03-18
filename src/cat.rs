@@ -1508,10 +1508,10 @@ impl UnifiedCatApp {
         let refreshing_arc = Arc::clone(&self.dock_refreshing);
 
         std::thread::spawn(move || {
-            // autorelease pool：后台线程无默认 pool，ObjC 临时对象会泄漏
-            objc2::rc::autoreleasepool(|_| {
-                #[cfg(target_os = "macos")]
-                {
+            #[cfg(target_os = "macos")]
+            {
+                // autorelease pool：后台线程无默认 pool，ObjC 临时对象会泄漏
+                objc2::rc::autoreleasepool(|_| {
                     if let Some(screens) = screen_info {
                         if let Some(fallback_screen) = main_screen_snapshot(&screens) {
                             let dock_sample = get_dock_sample_for_display_location(
@@ -1532,10 +1532,15 @@ impl UnifiedCatApp {
                             }
                         }
                     }
-                }
+                    let mut refreshing = refreshing_arc.lock().unwrap();
+                    *refreshing = false;
+                });
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
                 let mut refreshing = refreshing_arc.lock().unwrap();
                 *refreshing = false;
-            });
+            }
         });
         true
     }
@@ -1702,9 +1707,13 @@ impl eframe::App for UnifiedCatApp {
         // macOS: 每帧包裹 autorelease pool，及时回收 ObjC 临时对象
         // winit 的 handle_redraw 不包含 pool，导致 NSArray/MTLCommandBuffer 等对象积攒
         #[cfg(target_os = "macos")]
-        objc2::rc::autoreleasepool(|_| self.update_inner(ctx));
+        {
+            objc2::rc::autoreleasepool(|_| self.update_inner(ctx));
+        }
         #[cfg(not(target_os = "macos"))]
-        self.update_inner(ctx);
+        {
+            self.update_inner(ctx);
+        }
     }
 }
 

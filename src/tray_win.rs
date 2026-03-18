@@ -3,11 +3,10 @@
 
 use std::sync::atomic::Ordering;
 
-use image::GenericImageView;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
-use crate::cat::{CAT_VISIBLE, CC_ENABLED, CX_ENABLED};
+use crate::cat::{CC_ENABLED, CX_ENABLED};
 
 const FRAME_SIZE: u32 = 32;
 const ICON_SIZE: u32 = 32;
