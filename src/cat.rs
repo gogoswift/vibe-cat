@@ -1493,6 +1493,7 @@ impl UnifiedCatApp {
         }
         *refreshing = true;
 
+        #[cfg(target_os = "macos")]
         let preferred_anchor_screen_id = self
             .applied_layout
             .as_ref()
@@ -1504,6 +1505,7 @@ impl UnifiedCatApp {
         #[cfg(target_os = "macos")]
         let screen_info = get_macos_screen_info();
 
+        #[cfg(target_os = "macos")]
         let result_arc = Arc::clone(&self.dock_result);
         let refreshing_arc = Arc::clone(&self.dock_refreshing);
 
