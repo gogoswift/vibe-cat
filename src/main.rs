@@ -146,7 +146,10 @@ fn main() {
             eprintln!("MiniCat command is deprecated. Mini cats are now managed within the unified cat window.");
         }
         Commands::Server { port } => {
-            let rt = tokio::runtime::Runtime::new().expect("Cannot create tokio runtime");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Cannot create tokio runtime");
             rt.block_on(server::run_server(port));
         }
     }

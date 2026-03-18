@@ -1364,30 +1364,33 @@ impl UnifiedCatApp {
         let refreshing_arc = Arc::clone(&self.dock_refreshing);
 
         std::thread::spawn(move || {
-            #[cfg(target_os = "macos")]
-            {
-                if let Some(screens) = screen_info {
-                    if let Some(fallback_screen) = main_screen_snapshot(&screens) {
-                        let dock_sample = get_dock_sample_with_preferred_anchor(
-                            &screens,
-                            fallback_screen,
-                            preferred_anchor_screen_id.as_deref(),
-                        );
-                        if dock_sample.walk_bounds.width > 0.0 {
-                            if let Some(layout) = compute_applied_layout_for_dock_sample(
+            // autorelease pool：后台线程无默认 pool，ObjC 临时对象会泄漏
+            objc2::rc::autoreleasepool(|_| {
+                #[cfg(target_os = "macos")]
+                {
+                    if let Some(screens) = screen_info {
+                        if let Some(fallback_screen) = main_screen_snapshot(&screens) {
+                            let dock_sample = get_dock_sample_with_preferred_anchor(
                                 &screens,
                                 fallback_screen,
-                                &dock_sample,
-                            ) {
-                                let mut result = result_arc.lock().unwrap();
-                                *result = Some(DockBoundsResult { layout });
+                                preferred_anchor_screen_id.as_deref(),
+                            );
+                            if dock_sample.walk_bounds.width > 0.0 {
+                                if let Some(layout) = compute_applied_layout_for_dock_sample(
+                                    &screens,
+                                    fallback_screen,
+                                    &dock_sample,
+                                ) {
+                                    let mut result = result_arc.lock().unwrap();
+                                    *result = Some(DockBoundsResult { layout });
+                                }
                             }
                         }
                     }
                 }
-            }
-            let mut refreshing = refreshing_arc.lock().unwrap();
-            *refreshing = false;
+                let mut refreshing = refreshing_arc.lock().unwrap();
+                *refreshing = false;
+            });
         });
     }
 
@@ -1550,6 +1553,17 @@ impl eframe::App for UnifiedCatApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // macOS: 每帧包裹 autorelease pool，及时回收 ObjC 临时对象
+        // winit 的 handle_redraw 不包含 pool，导致 NSArray/MTLCommandBuffer 等对象积攒
+        #[cfg(target_os = "macos")]
+        objc2::rc::autoreleasepool(|_| self.update_inner(ctx));
+        #[cfg(not(target_os = "macos"))]
+        self.update_inner(ctx);
+    }
+}
+
+impl UnifiedCatApp {
+    fn update_inner(&mut self, ctx: &egui::Context) {
         ctx.request_repaint_after(Duration::from_millis(16));
 
         let now = Instant::now();
@@ -1612,7 +1626,11 @@ impl eframe::App for UnifiedCatApp {
                 // 轮询事件，收集需要新建的 mini cat ids
                 let new_agent_ids = self.poll_claude_state(cc_on, cx_on);
                 // 在事件循环之后创建 CatEntity，避免借用冲突
+                // 限制迷你猫最多 20 只，防止内存无限增长
                 for aid in new_agent_ids {
+                    if self.mini_cats.len() >= 20 {
+                        break;
+                    }
                     let start_x = if aid.starts_with("cx:") {
                         self.cx_main_cat.x_offset
                     } else {
@@ -1890,9 +1908,9 @@ impl eframe::App for UnifiedCatApp {
             self.cx_main_cat.last_move_time = now;
         }
 
-        // ---- 迷你猫超时兜底：10 分钟未收到 SubagentStop 则自动返回 ----
+        // ---- 迷你猫超时兜底：5 分钟未收到 SubagentStop 则自动返回 ----
         for mc in &mut self.mini_cats {
-            if !mc.returning && now.duration_since(mc.spawn_time) > Duration::from_secs(600) {
+            if !mc.returning && now.duration_since(mc.spawn_time) > Duration::from_secs(300) {
                 mc.returning = true;
             }
         }
@@ -1944,10 +1962,14 @@ impl eframe::App for UnifiedCatApp {
                 mc.last_move_time = now;
             }
         }
-        // 到达主猫身边的 returning 猫：删除
+        // 到达主猫身边的 returning 猫：删除（放宽阈值 + 超时强制删除）
         self.mini_cats.retain(|mc| {
             if !mc.returning {
                 return true;
+            }
+            // returning 超过 30 秒仍未到达主猫身边 → 强制删除（防止卡住）
+            if now.duration_since(mc.spawn_time) > Duration::from_secs(330) {
+                return false;
             }
             let target_center = if mc.id.starts_with("cx:") {
                 cx_center_x
@@ -1955,8 +1977,11 @@ impl eframe::App for UnifiedCatApp {
                 cc_center_x
             };
             let mc_center = mc.x_offset + mc.max_width / 2.0;
-            (mc_center - target_center).abs() > 5.0
+            (mc_center - target_center).abs() > 20.0
         });
+        // 同步清理 known_subagents：移除已不存在的迷你猫 id，防止 HashSet 无限增长
+        self.known_subagents
+            .retain(|id| self.mini_cats.iter().any(|mc| mc.id == *id));
 
         // ---- 拖拽下落动画（垂直落回底部，x 保持不变） ----
         if let Some((start_time, start_y)) = self.snap_back_start {
@@ -2107,25 +2132,21 @@ impl eframe::App for UnifiedCatApp {
                         }
                     }
 
-                    // 睡觉时头顶飘 zzz
+                    // 睡觉时头顶飘 zzz（固定 3 个字号，不走连续浮点避免字体缓存膨胀）
                     if cat.state.current_anim == ANIM_SLEEP {
-                        // 用应用启动以来的时间驱动，Z 的浮动不受帧重置影响
                         let t_global = self.app_start.elapsed().as_secs_f32();
-                        // 3 个 Z，间隔 0.8 秒，每个生命周期 2.4 秒
                         let cycle = 2.4_f32;
                         let stagger = 0.8_f32;
                         let head_x = rect.center().x + rect.width() * 0.25;
                         let head_y = rect.min.y + 4.0;
+                        // 三个 z 分别用固定字号：大 → 中 → 小
+                        const ZZZ_SIZES: [f32; 3] = [14.0, 12.0, 10.0];
 
                         for i in 0..3u32 {
                             let phase = (t_global + i as f32 * stagger) % cycle;
-                            let progress = phase / cycle; // 0.0 → 1.0
-
-                            // 向上漂浮 30pt, 向右偏移 8pt
+                            let progress = phase / cycle;
                             let float_y = head_y - progress * 30.0;
                             let drift_x = head_x + i as f32 * 4.0 + progress * 8.0;
-
-                            // 透明度: 淡入(0~10%) → 保持(10~70%) → 淡出(70~100%)
                             let alpha = if progress < 0.1 {
                                 progress / 0.1
                             } else if progress < 0.7 {
@@ -2133,16 +2154,13 @@ impl eframe::App for UnifiedCatApp {
                             } else {
                                 1.0 - (progress - 0.7) / 0.3
                             };
-
-                            // 字号随飘升变小: 14 → 10
-                            let font_size = 14.0 - progress * 4.0;
                             let a = (alpha * 220.0) as u8;
 
                             ui.painter().text(
                                 egui::pos2(drift_x, float_y),
                                 egui::Align2::LEFT_BOTTOM,
                                 "z",
-                                egui::FontId::proportional(font_size),
+                                egui::FontId::proportional(ZZZ_SIZES[i as usize]),
                                 egui::Color32::from_rgba_unmultiplied(200, 200, 255, a),
                             );
                         }
@@ -2272,13 +2290,14 @@ impl eframe::App for UnifiedCatApp {
                         }
                     }
 
-                    // zzz
+                    // zzz（固定 3 个字号）
                     if cat.state.current_anim == ANIM_SLEEP {
                         let t_global = self.app_start.elapsed().as_secs_f32();
                         let cycle = 2.4_f32;
                         let stagger = 0.8_f32;
                         let head_x = rect.center().x + rect.width() * 0.25;
                         let head_y = rect.min.y + 4.0;
+                        const ZZZ_SIZES: [f32; 3] = [14.0, 12.0, 10.0];
 
                         for i in 0..3u32 {
                             let phase = (t_global + i as f32 * stagger) % cycle;
@@ -2292,13 +2311,12 @@ impl eframe::App for UnifiedCatApp {
                             } else {
                                 1.0 - (progress - 0.7) / 0.3
                             };
-                            let font_size = 14.0 - progress * 4.0;
                             let a = (alpha * 220.0) as u8;
                             ui.painter().text(
                                 egui::pos2(drift_x, float_y),
                                 egui::Align2::LEFT_BOTTOM,
                                 "z",
-                                egui::FontId::proportional(font_size),
+                                egui::FontId::proportional(ZZZ_SIZES[i as usize]),
                                 egui::Color32::from_rgba_unmultiplied(200, 200, 255, a),
                             );
                         }
@@ -3175,71 +3193,74 @@ fn get_macos_screen_info() -> Option<Vec<MacScreenSnapshot>> {
     use objc2_app_kit::NSScreen;
     use objc2_foundation::MainThreadMarker;
 
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let screens = NSScreen::screens(mtm);
-    if screens.len() == 0 {
-        return None;
-    }
+    // autorelease pool 防止 NSScreen/NSArray 等 ObjC 临时对象泄漏
+    objc2::rc::autoreleasepool(|_| {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let screens = NSScreen::screens(mtm);
+        if screens.len() == 0 {
+            return None;
+        }
 
-    let main_metrics = NSScreen::mainScreen(mtm).map(|screen| {
-        let frame = screen.frame();
-        let visible = screen.visibleFrame();
-        (
-            frame.origin.x as f32,
-            frame.origin.y as f32,
-            frame.size.width as f32,
-            frame.size.height as f32,
-            visible.origin.x as f32,
-            visible.origin.y as f32,
-            visible.size.width as f32,
-            visible.size.height as f32,
-            screen.backingScaleFactor() as f32,
-        )
-    });
-
-    let mut result = Vec::with_capacity(screens.len());
-    for screen in screens.iter() {
-        let frame = screen.frame();
-        let visible = screen.visibleFrame();
-        let scale = screen.backingScaleFactor() as f32;
-
-        let frame_rect = crate::cat_layout::Rect::new(
-            frame.origin.x as f32,
-            frame.origin.y as f32,
-            frame.size.width as f32,
-            frame.size.height as f32,
-        );
-        let visible_rect = crate::cat_layout::Rect::new(
-            visible.origin.x as f32,
-            visible.origin.y as f32,
-            visible.size.width as f32,
-            visible.size.height as f32,
-        );
-
-        let metrics = (
-            frame_rect.x,
-            frame_rect.y,
-            frame_rect.width,
-            frame_rect.height,
-            visible_rect.x,
-            visible_rect.y,
-            visible_rect.width,
-            visible_rect.height,
-            scale,
-        );
-        let is_main = main_metrics.map_or(false, |main| main == metrics);
-        let name = unsafe { screen.localizedName() }.to_string();
-
-        result.push(MacScreenSnapshot {
-            id: build_screen_id(&name, &frame_rect, scale),
-            frame: frame_rect,
-            visible_frame: visible_rect,
-            scale_factor: scale,
-            is_main,
+        let main_metrics = NSScreen::mainScreen(mtm).map(|screen| {
+            let frame = screen.frame();
+            let visible = screen.visibleFrame();
+            (
+                frame.origin.x as f32,
+                frame.origin.y as f32,
+                frame.size.width as f32,
+                frame.size.height as f32,
+                visible.origin.x as f32,
+                visible.origin.y as f32,
+                visible.size.width as f32,
+                visible.size.height as f32,
+                screen.backingScaleFactor() as f32,
+            )
         });
-    }
 
-    Some(result)
+        let mut result = Vec::with_capacity(screens.len());
+        for screen in screens.iter() {
+            let frame = screen.frame();
+            let visible = screen.visibleFrame();
+            let scale = screen.backingScaleFactor() as f32;
+
+            let frame_rect = crate::cat_layout::Rect::new(
+                frame.origin.x as f32,
+                frame.origin.y as f32,
+                frame.size.width as f32,
+                frame.size.height as f32,
+            );
+            let visible_rect = crate::cat_layout::Rect::new(
+                visible.origin.x as f32,
+                visible.origin.y as f32,
+                visible.size.width as f32,
+                visible.size.height as f32,
+            );
+
+            let metrics = (
+                frame_rect.x,
+                frame_rect.y,
+                frame_rect.width,
+                frame_rect.height,
+                visible_rect.x,
+                visible_rect.y,
+                visible_rect.width,
+                visible_rect.height,
+                scale,
+            );
+            let is_main = main_metrics.map_or(false, |main| main == metrics);
+            let name = unsafe { screen.localizedName() }.to_string();
+
+            result.push(MacScreenSnapshot {
+                id: build_screen_id(&name, &frame_rect, scale),
+                frame: frame_rect,
+                visible_frame: visible_rect,
+                scale_factor: scale,
+                is_main,
+            });
+        }
+
+        Some(result)
+    })
 }
 
 /// macOS: 隐藏 Dock 图标
@@ -3458,9 +3479,12 @@ fn build_cat_native_options(initial_layout: &AppliedLayout) -> eframe::NativeOpt
 /// - 新建 Tokio Runtime 并启动 OTel HTTP 接收服务。
 /// - 调用 eframe 进入 GUI 主循环，直到窗口关闭。
 pub fn run_cat() {
-    // 后台启动 Codex OTel 接收服务器
+    // 后台启动 Codex OTel 接收服务器（单线程 runtime，节省约 10 个线程）
     std::thread::spawn(|| {
-        let rt = tokio::runtime::Runtime::new().expect("Cannot create tokio runtime");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Cannot create tokio runtime");
         rt.block_on(crate::server::run_server(4318));
     });
 

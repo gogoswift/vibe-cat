@@ -253,6 +253,11 @@ fn spawn_log_watcher(entries: Arc<Mutex<Vec<LogEntry>>>, filter: Option<String>)
                             if should_show(&entry, filter.as_deref()) {
                                 let mut locked = entries.lock().unwrap();
                                 locked.push(entry);
+                                // 保留最近 2000 条，防止内存无限增长
+                                if locked.len() > 2000 {
+                                    let drain_count = locked.len() - 2000;
+                                    locked.drain(..drain_count);
+                                }
                             }
                         }
                     }
@@ -275,9 +280,12 @@ fn should_show(entry: &LogEntry, filter: Option<&str>) -> bool {
 
 /// 启动 GUI 窗口
 pub fn run_gui(filter: Option<&str>) {
-    // 自动启动 OTel 服务器（接收 Codex 事件）
+    // 自动启动 OTel 服务器（单线程 runtime，节省线程）
     std::thread::spawn(|| {
-        let rt = tokio::runtime::Runtime::new().expect("Cannot create tokio runtime");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Cannot create tokio runtime");
         rt.block_on(crate::server::run_server(4318));
     });
 
