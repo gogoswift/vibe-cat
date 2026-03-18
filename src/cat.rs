@@ -1759,6 +1759,15 @@ impl UnifiedCatApp {
                     self.main_cat.x_offset = (self.window_width - self.main_cat.max_width) / 2.0;
                     self.main_cat.last_move_time = now;
                 }
+                #[cfg(target_os = "windows")]
+                {
+                    let x = 0.0;
+                    let y = self.base_y - self.window_height
+                        + self.main_cat.min_bottom_offset;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+                    self.main_cat.x_offset = (self.window_width - self.main_cat.max_width) / 2.0;
+                    self.main_cat.last_move_time = now;
+                }
             } else if self.position_phase == 6 {
                 // Phase 6: 初始化窗口外观
                 setup_window_appearance();
@@ -3851,6 +3860,7 @@ fn setup_window_appearance() {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     };
+    use windows::Win32::Graphics::Dwm::{DwmExtendFrameIntoClientArea, MARGINS};
 
     let hwnd = find_eframe_window();
     if let Some(hwnd) = hwnd {
@@ -3859,6 +3869,15 @@ fn setup_window_appearance() {
             let new_style =
                 (ex_style | WS_EX_TOOLWINDOW.0 as i32) & !(WS_EX_APPWINDOW.0 as i32);
             let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, new_style);
+
+            // 启用 DWM 合成透明：margins 全 -1 表示整个窗口客户区扩展为玻璃区域
+            let margins = MARGINS {
+                cxLeftWidth: -1,
+                cxRightWidth: -1,
+                cyTopHeight: -1,
+                cyBottomHeight: -1,
+            };
+            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
         }
     }
 }
