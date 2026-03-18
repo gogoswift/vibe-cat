@@ -484,14 +484,21 @@ fn detect_macos_locale_identifier() -> Option<String> {
     }
 }
 
-/// 在非 macOS 平台上提供一个空实现，统一给上层走环境变量回退。
-///
-/// 返回值：
-/// - 永远返回 `None`。
-///
-/// 错误处理：
-/// - 不适用。
-#[cfg(not(target_os = "macos"))]
+/// Windows: 通过 GetUserDefaultLocaleName 获取系统语言
+#[cfg(target_os = "windows")]
+fn detect_macos_locale_identifier() -> Option<String> {
+    use windows::Win32::Globalization::GetUserDefaultLocaleName;
+    let mut buf = [0u16; 85]; // LOCALE_NAME_MAX_LENGTH
+    let len = unsafe { GetUserDefaultLocaleName(&mut buf) };
+    if len > 0 {
+        String::from_utf16(&buf[..len as usize - 1]).ok()
+    } else {
+        None
+    }
+}
+
+/// 非 macOS/Windows 平台空实现，走环境变量回退。
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn detect_macos_locale_identifier() -> Option<String> {
     None
 }

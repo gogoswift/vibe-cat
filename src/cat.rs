@@ -17,6 +17,7 @@
 //! - Dock 定位与托盘逻辑仅在 macOS 生效。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,13 @@ use rand::Rng;
 use crate::logger;
 #[cfg(target_os = "macos")]
 use crate::tray;
+
+/// 跨平台共享状态：猫是否可见
+pub static CAT_VISIBLE: AtomicBool = AtomicBool::new(true);
+/// 跨平台共享状态：Claude Code 是否启用
+pub static CC_ENABLED: AtomicBool = AtomicBool::new(true);
+/// 跨平台共享状态：Codex 是否启用
+pub static CX_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// 嵌入精灵图
 pub(crate) const CAT_SPRITE_BYTES: &[u8] = include_bytes!("assets/cat.png");
@@ -1752,11 +1760,14 @@ impl UnifiedCatApp {
         // ---- 读取 cc/cx 显示开关 ----
         #[cfg(target_os = "macos")]
         let (cc_on, cx_on) = (
-            tray::CC_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
-            tray::CX_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
+            tray::CC_ENABLED.load(Ordering::Relaxed),
+            tray::CX_ENABLED.load(Ordering::Relaxed),
         );
         #[cfg(not(target_os = "macos"))]
-        let (cc_on, cx_on) = (true, true);
+        let (cc_on, cx_on) = (
+            CC_ENABLED.load(Ordering::Relaxed),
+            CX_ENABLED.load(Ordering::Relaxed),
+        );
 
         // ---- 每秒轮询事件 + 每 500ms 检查 pending approval ----
         if now.duration_since(self.last_poll_time) > Duration::from_millis(500) {
@@ -1867,7 +1878,13 @@ impl UnifiedCatApp {
         // ---- 猫隐藏时跳过渲染（托盘动画仍继续） ----
         #[cfg(target_os = "macos")]
         {
-            if !tray::CAT_VISIBLE.load(std::sync::atomic::Ordering::Relaxed) {
+            if !tray::CAT_VISIBLE.load(Ordering::Relaxed) {
+                return;
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if !CAT_VISIBLE.load(Ordering::Relaxed) {
                 return;
             }
         }
@@ -3760,7 +3777,95 @@ fn setup_window_appearance() {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows: 检测主屏幕尺寸和任务栏位置，返回初始布局
+#[cfg(target_os = "windows")]
+fn get_windows_initial_layout() -> AppliedLayout {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GetSystemMetrics, GetWindowRect, SystemParametersInfoW, SM_CXSCREEN,
+        SM_CYSCREEN, SPI_GETWORKAREA,
+    };
+    use windows::Win32::Foundation::RECT;
+    use windows::core::w;
+
+    let screen_w;
+    let screen_h;
+    let mut work_area = RECT::default();
+
+    unsafe {
+        screen_w = GetSystemMetrics(SM_CXSCREEN) as f32;
+        screen_h = GetSystemMetrics(SM_CYSCREEN) as f32;
+        let _ = SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut work_area as *mut RECT as *mut _),
+            Default::default(),
+        );
+    }
+
+    // 检测任务栏位置
+    let taskbar_hwnd = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) };
+    let taskbar_at_bottom = if let Ok(hwnd) = taskbar_hwnd {
+        if !hwnd.is_invalid() {
+            let mut taskbar_rect = RECT::default();
+            let ok = unsafe { GetWindowRect(hwnd, &mut taskbar_rect) };
+            if ok.is_ok() {
+                taskbar_rect.top as f32 > screen_h / 2.0
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    } else {
+        true
+    };
+
+    let base_y = if taskbar_at_bottom {
+        work_area.bottom as f32
+    } else {
+        screen_h
+    };
+
+    let window_width = screen_w;
+    AppliedLayout {
+        window_width,
+        window_origin: egui::pos2(0.0, base_y),
+        walk_bounds: crate::cat_layout::Rect::new(0.0, 0.0, window_width, 0.0),
+        anchor_screen_id: "primary".to_string(),
+        dock_mode: crate::cat_layout::DockPlacementMode::Floor,
+        dock_autohide: false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn setup_window_appearance() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+
+    let hwnd = find_eframe_window();
+    if let Some(hwnd) = hwnd {
+        unsafe {
+            let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            let new_style =
+                (ex_style | WS_EX_TOOLWINDOW.0 as i32) & !(WS_EX_APPWINDOW.0 as i32);
+            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, new_style);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn find_eframe_window() -> Option<windows::Win32::Foundation::HWND> {
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+    use windows::core::w;
+    let hwnd = unsafe { FindWindowW(None, w!("Desktop Cat")) };
+    match hwnd {
+        Ok(h) if !h.is_invalid() => Some(h),
+        _ => None,
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn setup_window_appearance() {}
 
 /// macOS: 根据鼠标位置动态切换鼠标穿透
@@ -3805,7 +3910,54 @@ fn update_mouse_passthrough(cat_rects: &[egui::Rect], is_dragging: bool) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn update_mouse_passthrough(cat_rects: &[egui::Rect], is_dragging: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, GetWindowLongW, GetWindowRect, SetWindowLongW, GWL_EXSTYLE,
+        WS_EX_TRANSPARENT,
+    };
+    use windows::Win32::Foundation::{POINT, RECT};
+
+    let hwnd = find_eframe_window();
+    let Some(hwnd) = hwnd else { return };
+
+    if is_dragging {
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, style & !(WS_EX_TRANSPARENT.0 as i32));
+        }
+        return;
+    }
+
+    let mut cursor_pos = POINT::default();
+    let cursor_ok = unsafe { GetCursorPos(&mut cursor_pos) };
+    if cursor_ok.is_err() {
+        return;
+    }
+
+    let mut win_rect = RECT::default();
+    let rect_ok = unsafe { GetWindowRect(hwnd, &mut win_rect) };
+    if rect_ok.is_err() {
+        return;
+    }
+
+    let local_x = (cursor_pos.x - win_rect.left) as f32;
+    let local_y = (cursor_pos.y - win_rect.top) as f32;
+    let mouse_pos = egui::pos2(local_x, local_y);
+
+    let over_any_cat = cat_rects.iter().any(|r| r.contains(mouse_pos));
+
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        if over_any_cat {
+            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, style & !(WS_EX_TRANSPARENT.0 as i32));
+        } else {
+            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TRANSPARENT.0 as i32);
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn update_mouse_passthrough(_cat_rects: &[egui::Rect], _is_dragging: bool) {}
 
 // ============================================================
@@ -3885,8 +4037,14 @@ pub fn run_cat() {
         }
     };
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    let initial_layout = get_windows_initial_layout();
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let initial_layout = AppliedLayout::fallback(200.0, 1200.0, 800.0);
+
+    #[cfg(target_os = "windows")]
+    crate::tray_win::setup_tray();
 
     let options = build_cat_native_options(&initial_layout);
 

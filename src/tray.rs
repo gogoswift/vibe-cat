@@ -180,13 +180,9 @@ const ACTIVE_ANIMS: &[ActiveAnimEntry] = &[
 
 // ── 全局状态（点击处理用） ──
 
-/// 桌面猫可见性标志（左键点击切换）
-pub static CAT_VISIBLE: AtomicBool = AtomicBool::new(true);
-
-/// cc 主猫（及其 mini cat）显示开关
-pub static CC_ENABLED: AtomicBool = AtomicBool::new(true);
-/// cx 主猫（及其 mini cat）显示开关
-pub static CX_ENABLED: AtomicBool = AtomicBool::new(true);
+pub use crate::cat::CAT_VISIBLE;
+pub use crate::cat::CC_ENABLED;
+pub use crate::cat::CX_ENABLED;
 
 /// 右键菜单指针（main thread only，应用生命周期内有效）
 static MENU_PTR: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
