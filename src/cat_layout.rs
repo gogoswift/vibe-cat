@@ -270,10 +270,7 @@ pub fn compute_cat_window_layout(
     match dock.mode {
         DockPlacementMode::Bottom => {
             let dock_frame = dock.dock_frame.as_ref()?;
-            let walk_bounds = dock
-                .walk_bounds_override
-                .as_ref()
-                .unwrap_or(dock_frame);
+            let walk_bounds = dock.walk_bounds_override.as_ref().unwrap_or(dock_frame);
             Some(CatWindowLayout {
                 anchor_screen_id: screen.id.clone(),
                 window_origin: egui::pos2(
@@ -301,9 +298,7 @@ pub fn compute_cat_window_layout(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        compute_cat_window_layout, DockPlacementMode, DockSnapshot, Rect, ScreenSnapshot,
-    };
+    use super::{compute_cat_window_layout, DockPlacementMode, DockSnapshot, Rect, ScreenSnapshot};
 
     #[test]
     fn bottom_dock_on_secondary_screen_keeps_global_origin() {
@@ -391,7 +386,8 @@ mod tests {
             ),
         ];
         let dock_frame = Rect::new(-1200.0, 820.0, 800.0, 64.0);
-        let dock = DockSnapshot::bottom_with_walk_bounds("left", dock_frame.clone(), dock_frame, false);
+        let dock =
+            DockSnapshot::bottom_with_walk_bounds("left", dock_frame.clone(), dock_frame, false);
 
         let layout = compute_cat_window_layout(&screens, &dock, 96.0, 22.0).unwrap();
 

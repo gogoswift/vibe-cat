@@ -1,3 +1,19 @@
+//! 事件监控 GUI 窗口。
+//!
+//! 职责与边界：
+//! - 负责读取事件日志并用 `egui` 渲染实时监控界面。
+//! - 负责管理 GUI 过滤器、自动滚动与窗口级国际化文案刷新。
+//! - 不负责日志采集本身；事件写入由 logger/server/hook 模块完成。
+//!
+//! 关键副作用：
+//! - 启动后台线程监控日志文件新增内容。
+//! - 启动本地 OTel 接收服务器，以便 GUI 模式下也能接收 Codex 事件。
+//! - 会在运行时更新窗口标题和界面文本。
+//!
+//! 关键依赖与约束：
+//! - 依赖 `eframe/egui` 渲染界面，依赖 `crate::i18n` 提供翻译。
+//! - 当前事件摘要文本直接使用日志内容，不做二次翻译。
+
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
@@ -6,6 +22,7 @@ use std::time::Duration;
 
 use eframe::egui;
 
+use crate::i18n::{self, AppLanguage, TranslationKey};
 use crate::logger::{log_file_path, LogEntry};
 
 /// 事件类型 → egui 颜色
@@ -37,43 +54,53 @@ fn event_color(event_type: &str) -> egui::Color32 {
     }
 }
 
-/// 所有可能的事件类型（用于过滤器下拉）：(事件名, 中文说明)
-const EVENT_TYPES: &[(&str, &str)] = &[
-    ("All", "全部"),
-    ("SessionStart", "会话开始"),
-    ("SessionEnd", "会话结束"),
-    ("UserPromptSubmit", "用户提交"),
-    ("InstructionsLoaded", "指令加载"),
-    ("PreToolUse", "工具调用前"),
-    ("PostToolUse", "工具调用后"),
-    ("PostToolUseFailure", "工具调用失败"),
-    ("PermissionRequest", "权限请求"),
-    ("Notification", "通知"),
-    ("SubagentStart", "子代理启动"),
-    ("SubagentStop", "子代理停止"),
-    ("Stop", "停止"),
-    ("TeammateIdle", "队友空闲"),
-    ("TaskCompleted", "任务完成"),
-    ("ConfigChange", "配置变更"),
-    ("WorktreeCreate", "工作树创建"),
-    ("WorktreeRemove", "工作树删除"),
-    ("PreCompact", "压缩前"),
-    ("api_request", "CX API请求"),
-    ("tool_decision", "CX工具决策"),
-    ("tool_result", "CX工具结果"),
-    ("sse_event", "CX SSE事件"),
+/// 所有可能的事件类型（用于过滤器下拉）。
+const EVENT_TYPES: &[&str] = &[
+    "All",
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "InstructionsLoaded",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+    "Notification",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+    "TeammateIdle",
+    "TaskCompleted",
+    "ConfigChange",
+    "WorktreeCreate",
+    "WorktreeRemove",
+    "PreCompact",
+    "api_request",
+    "tool_decision",
+    "tool_result",
+    "sse_event",
 ];
 
-/// 根据事件名查找显示文本
-fn event_display_name(event_name: &str) -> String {
-    EVENT_TYPES
-        .iter()
-        .find(|(name, _)| *name == event_name)
-        .map(|(name, cn)| format!("{} [{}]", name, cn))
-        .unwrap_or_else(|| event_name.to_string())
+/// 返回当前语言下的 GUI 事件类型显示名。
+///
+/// 入参：
+/// - `language`: 当前界面使用的显示语言。
+/// - `event_name`: 原始事件类型标识。
+///
+/// 返回值：
+/// - 已知事件返回本地化标签，未知事件回退原始名称。
+///
+/// 错误处理：
+/// - 不会失败；翻译模块内部会对未知事件做回退。
+fn event_display_name(language: AppLanguage, event_name: &str) -> String {
+    i18n::event_type_label(language, event_name)
 }
 
-/// GUI 应用状态
+/// GUI 应用状态。
+///
+/// 职责与边界：
+/// - 保存当前已加载的日志条目、筛选条件与自动滚动状态。
+/// - 不负责日志读取线程生命周期管理；日志加载由外部 helper 启动。
 struct MonitorApp {
     entries: Arc<Mutex<Vec<LogEntry>>>,
     selected_filter: String,
@@ -81,6 +108,16 @@ struct MonitorApp {
 }
 
 impl MonitorApp {
+    /// 创建 GUI 应用状态。
+    ///
+    /// 入参：
+    /// - `entries`: 与日志监控线程共享的事件列表。
+    ///
+    /// 返回值：
+    /// - 初始化后的 `MonitorApp`，默认显示全部事件并开启自动滚动。
+    ///
+    /// 错误处理：
+    /// - 不会失败；该构造函数只做内存初始化。
     fn new(entries: Arc<Mutex<Vec<LogEntry>>>) -> Self {
         Self {
             entries,
@@ -91,27 +128,56 @@ impl MonitorApp {
 }
 
 impl eframe::App for MonitorApp {
+    /// 渲染 GUI 每一帧，并按当前语言刷新界面文案。
+    ///
+    /// 入参：
+    /// - `ctx`: `egui` 上下文，用于请求重绘和更新窗口标题。
+    /// - `_frame`: eframe 提供的窗口帧对象，本实现当前未直接使用。
+    ///
+    /// 返回值：
+    /// - 无返回值；渲染结果直接写入当前帧。
+    ///
+    /// 错误处理：
+    /// - 不返回 `Result`；锁竞争时会采用 poisoned lock 的内部值继续绘制。
+    ///
+    /// 关键副作用：
+    /// - 每 500ms 请求一次重绘。
+    /// - 会根据当前语言更新窗口标题，为未来运行时语言切换预留刷新能力。
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let language = i18n::current_language();
+
         // 请求持续重绘（用于实时更新）
         ctx.request_repaint_after(Duration::from_millis(500));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+            i18n::translate(language, TranslationKey::GuiWindowTitle).to_string(),
+        ));
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Filter:");
+                ui.label(i18n::translate(language, TranslationKey::GuiFilterLabel));
                 egui::ComboBox::from_id_salt("event_filter")
-                    .selected_text(event_display_name(&self.selected_filter))
+                    .selected_text(event_display_name(language, &self.selected_filter))
                     .show_ui(ui, |ui| {
-                        for &(name, cn) in EVENT_TYPES {
-                            let label = format!("{} [{}]", name, cn);
-                            ui.selectable_value(&mut self.selected_filter, name.to_string(), label);
+                        for &name in EVENT_TYPES {
+                            ui.selectable_value(
+                                &mut self.selected_filter,
+                                name.to_string(),
+                                event_display_name(language, name),
+                            );
                         }
                     });
 
                 ui.separator();
-                ui.checkbox(&mut self.auto_scroll, "Auto-scroll");
+                ui.checkbox(
+                    &mut self.auto_scroll,
+                    i18n::translate(language, TranslationKey::GuiAutoScroll),
+                );
 
                 ui.separator();
-                if ui.button("Clear").clicked() {
+                if ui
+                    .button(i18n::translate(language, TranslationKey::GuiClear))
+                    .clicked()
+                {
                     if let Ok(mut entries) = self.entries.lock() {
                         entries.clear();
                     }
@@ -120,7 +186,7 @@ impl eframe::App for MonitorApp {
                 ui.separator();
                 if let Ok(entries) = self.entries.lock() {
                     ui.label(
-                        egui::RichText::new(format!("{} events", entries.len()))
+                        egui::RichText::new(i18n::format_event_count(language, entries.len()))
                             .color(egui::Color32::from_rgb(160, 160, 160)),
                     );
                 }
@@ -278,7 +344,20 @@ fn should_show(entry: &LogEntry, filter: Option<&str>) -> bool {
     }
 }
 
-/// 启动 GUI 窗口
+/// 启动事件监控 GUI 窗口。
+///
+/// 入参：
+/// - `filter`: 可选的初始过滤关键词；若提供，则只显示事件类型中包含该关键词的日志。
+///
+/// 返回值：
+/// - 无返回值；函数会阻塞当前线程直到 GUI 关闭。
+///
+/// 错误处理：
+/// - 若运行时、窗口或 GUI 框架初始化失败，将直接 panic。
+///
+/// 关键副作用：
+/// - 会启动后台 OTel 接收线程和日志监控线程。
+/// - 会创建并显示始终置顶的 GUI 窗口。
 pub fn run_gui(filter: Option<&str>) {
     // 自动启动 OTel 服务器（单线程 runtime，节省线程）
     std::thread::spawn(|| {
@@ -304,7 +383,7 @@ pub fn run_gui(filter: Option<&str>) {
     };
 
     eframe::run_native(
-        "Claude Hook Monitor",
+        i18n::translate(i18n::current_language(), TranslationKey::GuiWindowTitle),
         options,
         Box::new(move |cc| {
             // 加载中文字体
