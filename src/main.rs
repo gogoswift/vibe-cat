@@ -26,6 +26,8 @@ mod server;
 mod tail;
 #[cfg(target_os = "macos")]
 mod tray;
+#[cfg(target_os = "windows")]
+mod tray_win;
 
 use std::io::Read;
 
@@ -310,6 +312,15 @@ fn main() {
                 stringWithUTF8String: c"AutoFillEnabled".as_ptr()
             ];
             let _: () = objc2::msg_send![defaults, setBool: false forKey: key];
+        }
+    }
+
+    // Windows: DPI 感知，确保高分屏坐标正确
+    #[cfg(target_os = "windows")]
+    {
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::SetProcessDPIAware;
+            let _ = SetProcessDPIAware();
         }
     }
 
