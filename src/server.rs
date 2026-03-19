@@ -343,12 +343,25 @@ async fn receive_logs(headers: HeaderMap, body: Bytes) -> StatusCode {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    if content_type.starts_with("application/x-protobuf") {
+    eprintln!("[server] receive_logs: content-type={:?}, body_len={}", content_type, body.len());
+
+    let result = if content_type.contains("protobuf") || content_type.contains("octet-stream") {
         receive_logs_protobuf(body)
-    } else {
-        // 默认尝试 JSON（Codex 发送 JSON 但可能不带正确的 Content-Type）
+    } else if content_type.contains("json") {
         receive_logs_json(&body)
-    }
+    } else {
+        // 未知 Content-Type：先尝试 JSON，失败则尝试 protobuf
+        let body_clone = body.clone();
+        let json_result = receive_logs_json(&body);
+        if json_result == StatusCode::OK {
+            json_result
+        } else {
+            receive_logs_protobuf(body_clone)
+        }
+    };
+
+    eprintln!("[server] → result: {}", result);
+    result
 }
 
 /// 启动 OTel HTTP 接收服务器

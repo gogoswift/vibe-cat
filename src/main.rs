@@ -1,5 +1,4 @@
-// Windows: 隐藏控制台窗口
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+// Windows: 不使用 windows_subsystem，改为在 cat 命令中动态隐藏控制台
 
 //! 应用命令行与运行入口。
 //!
@@ -342,7 +341,15 @@ fn main() {
         Commands::Gui { filter } => {
             gui::run_gui(filter.as_deref());
         }
-        Commands::Cat => cat::run_cat(),
+        Commands::Cat => {
+            // Windows: 隐藏控制台窗口（仅 cat 命令需要）
+            #[cfg(target_os = "windows")]
+            unsafe {
+                use windows::Win32::System::Console::FreeConsole;
+                let _ = FreeConsole();
+            }
+            cat::run_cat();
+        }
         Commands::Approve => approve::handle_approve(),
         Commands::MiniCat { agent_id: _ } => {
             eprintln!("MiniCat command is deprecated. Mini cats are now managed within the unified cat window.");
