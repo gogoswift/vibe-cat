@@ -60,14 +60,30 @@ pub fn setup_tray() {
         let cx_id = cx_item.id().clone();
         let quit_id = quit_item.id().clone();
 
+        // Windows 需要消息循环才能弹出托盘右键菜单
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, GetMessageW, TranslateMessage, MSG,
+        };
+        use windows::Win32::Foundation::HWND;
+
         loop {
-            if let Ok(event) = MenuEvent::receiver().recv() {
-                if event.id == cc_id {
-                    CC_ENABLED.fetch_xor(true, Ordering::Relaxed);
-                } else if event.id == cx_id {
-                    CX_ENABLED.fetch_xor(true, Ordering::Relaxed);
-                } else if event.id == quit_id {
-                    std::process::exit(0);
+            // 泵送 Win32 消息（驱动托盘菜单显示）
+            unsafe {
+                let mut msg = MSG::default();
+                while GetMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+
+                    // 在消息循环内检查菜单事件
+                    while let Ok(event) = MenuEvent::receiver().try_recv() {
+                        if event.id == cc_id {
+                            CC_ENABLED.fetch_xor(true, Ordering::Relaxed);
+                        } else if event.id == cx_id {
+                            CX_ENABLED.fetch_xor(true, Ordering::Relaxed);
+                        } else if event.id == quit_id {
+                            std::process::exit(0);
+                        }
+                    }
                 }
             }
         }
