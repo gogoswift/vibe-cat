@@ -3968,7 +3968,7 @@ fn update_mouse_passthrough(cat_rects: &[egui::Rect], _is_dragging: bool) {
         // 无猫时设置空区域，让所有鼠标事件穿透
         unsafe {
             let empty_rgn = CreateRectRgn(0, 0, 0, 0);
-            let _ = SetWindowRgn(hwnd, Some(empty_rgn), true);
+            let _ = SetWindowRgn(hwnd, empty_rgn, true);
             // SetWindowRgn 接管 region，无需 DeleteObject
         }
         return;
@@ -3995,7 +3995,7 @@ fn update_mouse_passthrough(cat_rects: &[egui::Rect], _is_dragging: bool) {
             let _ = DeleteObject(cat_rgn);
         }
         // 只有猫精灵区域接收鼠标事件，其余穿透
-        let _ = SetWindowRgn(hwnd, Some(combined), true);
+        let _ = SetWindowRgn(hwnd, combined, true);
         // SetWindowRgn 接管 combined，无需 DeleteObject
     }
 }
