@@ -3999,7 +3999,7 @@ fn update_mouse_passthrough(_cat_rects: &[egui::Rect], _is_dragging: bool) {}
 ///
 /// 语义与边界：
 /// - 统一收口窗口尺寸、初始位置、透明度与置顶策略，避免 `run_cat` 内散落平台细节。
-/// - 显式固定 `renderer=wgpu`，避免 macOS 透明窗口回退到 `glow/OpenGL`。
+/// - macOS 固定 `renderer=wgpu`，Windows 用 `glow` 以获得透明窗口支持。
 ///
 /// 入参：
 /// - `initial_layout`：启动阶段计算出的窗口布局快照。
@@ -4028,6 +4028,10 @@ fn build_cat_native_options(initial_layout: &AppliedLayout) -> eframe::NativeOpt
             .with_transparent(true)
             .with_always_on_top()
             .with_taskbar(false),
+        // macOS 用 wgpu；Windows 用 glow (OpenGL)，wgpu 在 Windows 上透明支持不佳
+        #[cfg(target_os = "windows")]
+        renderer: eframe::Renderer::Glow,
+        #[cfg(not(target_os = "windows"))]
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     }

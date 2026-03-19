@@ -1,3 +1,6 @@
+// Windows: 隐藏控制台窗口
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 //! 应用命令行与运行入口。
 //!
 //! 职责与边界：

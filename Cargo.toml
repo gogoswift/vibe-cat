@@ -12,7 +12,7 @@ colored = "2"
 dirs = "5"
 fs2 = "0.4"
 toml = "0.8"
-eframe = { version = "0.31", features = ["wgpu"] }
+eframe = { version = "0.31", features = ["wgpu", "glow"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rand = "0.8"
 axum = "0.8"
