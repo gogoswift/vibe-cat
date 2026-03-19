@@ -42,10 +42,13 @@ pub fn setup_tray() {
         let menu = Menu::new();
         let cc_item = MenuItem::new("Claude Code", true, None);
         let cx_item = MenuItem::new("Codex", true, None);
+        let monitor_item = MenuItem::new("Event Monitor", true, None);
         let quit_item = MenuItem::new("Quit", true, None);
 
         let _ = menu.append(&cc_item);
         let _ = menu.append(&cx_item);
+        let _ = menu.append(&PredefinedMenuItem::separator());
+        let _ = menu.append(&monitor_item);
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&quit_item);
 
@@ -58,6 +61,7 @@ pub fn setup_tray() {
 
         let cc_id = cc_item.id().clone();
         let cx_id = cx_item.id().clone();
+        let monitor_id = monitor_item.id().clone();
         let quit_id = quit_item.id().clone();
 
         // Windows 需要消息循环才能弹出托盘右键菜单
@@ -80,6 +84,9 @@ pub fn setup_tray() {
                             CC_ENABLED.fetch_xor(true, Ordering::Relaxed);
                         } else if event.id == cx_id {
                             CX_ENABLED.fetch_xor(true, Ordering::Relaxed);
+                        } else if event.id == monitor_id {
+                            let exe = std::env::current_exe().unwrap_or_default();
+                            let _ = std::process::Command::new(exe).arg("gui").spawn();
                         } else if event.id == quit_id {
                             std::process::exit(0);
                         }
