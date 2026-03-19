@@ -3860,27 +3860,40 @@ fn get_windows_initial_layout() -> AppliedLayout {
 #[cfg(target_os = "windows")]
 fn setup_window_appearance() {
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        GetWindowLongW, SetWindowLongW, SetWindowPos,
+        GWL_STYLE, GWL_EXSTYLE,
+        WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        WS_CAPTION, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_SYSMENU,
+        SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     };
-    use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
-    use windows::Win32::UI::Controls::MARGINS;
+    use windows::Win32::Foundation::HWND;
 
     let hwnd = find_eframe_window();
     if let Some(hwnd) = hwnd {
         unsafe {
-            let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-            let new_style =
-                (ex_style | WS_EX_TOOLWINDOW.0 as i32) & !(WS_EX_APPWINDOW.0 as i32);
-            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, new_style);
+            // 移除窗口装饰：标题栏、边框、系统按钮
+            let style = GetWindowLongW(hwnd, GWL_STYLE);
+            let new_style = style
+                & !(WS_CAPTION.0 as i32)
+                & !(WS_THICKFRAME.0 as i32)
+                & !(WS_MINIMIZEBOX.0 as i32)
+                & !(WS_MAXIMIZEBOX.0 as i32)
+                & !(WS_SYSMENU.0 as i32);
+            let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style);
 
-            // 启用 DWM 合成透明：margins 全 -1 表示整个窗口客户区扩展为玻璃区域
-            let margins = MARGINS {
-                cxLeftWidth: -1,
-                cxRightWidth: -1,
-                cyTopHeight: -1,
-                cyBottomHeight: -1,
-            };
-            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+            // 隐藏任务栏图标：TOOLWINDOW + 去掉 APPWINDOW
+            let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            let new_ex_style =
+                (ex_style | WS_EX_TOOLWINDOW.0 as i32) & !(WS_EX_APPWINDOW.0 as i32);
+            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, new_ex_style);
+
+            // 应用样式变更
+            let _ = SetWindowPos(
+                hwnd,
+                HWND(std::ptr::null_mut()),
+                0, 0, 0, 0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+            );
         }
     }
 }
@@ -3947,6 +3960,8 @@ fn update_mouse_passthrough(cat_rects: &[egui::Rect], is_dragging: bool) {
         GetCursorPos, GetWindowLongW, GetWindowRect, SetWindowLongW, GWL_EXSTYLE,
         WS_EX_TRANSPARENT,
     };
+    use windows::Win32::Graphics::Gdi::GetDC;
+    use windows::Win32::UI::WindowsAndMessaging::GetDpiForWindow;
     use windows::Win32::Foundation::{POINT, RECT};
 
     let hwnd = find_eframe_window();
@@ -3972,8 +3987,12 @@ fn update_mouse_passthrough(cat_rects: &[egui::Rect], is_dragging: bool) {
         return;
     }
 
-    let local_x = (cursor_pos.x - win_rect.left) as f32;
-    let local_y = (cursor_pos.y - win_rect.top) as f32;
+    // GetCursorPos/GetWindowRect 返回物理像素，egui rect 是逻辑像素，需要按 DPI 缩放
+    let dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
+    let scale = if dpi > 0.0 { dpi / 96.0 } else { 1.0 };
+
+    let local_x = (cursor_pos.x - win_rect.left) as f32 / scale;
+    let local_y = (cursor_pos.y - win_rect.top) as f32 / scale;
     let mouse_pos = egui::pos2(local_x, local_y);
 
     let over_any_cat = cat_rects.iter().any(|r| r.contains(mouse_pos));
