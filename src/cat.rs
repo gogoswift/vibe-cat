@@ -3960,8 +3960,7 @@ fn update_mouse_passthrough(cat_rects: &[egui::Rect], is_dragging: bool) {
         GetCursorPos, GetWindowLongW, GetWindowRect, SetWindowLongW, GWL_EXSTYLE,
         WS_EX_TRANSPARENT,
     };
-    use windows::Win32::Graphics::Gdi::GetDC;
-    use windows::Win32::UI::WindowsAndMessaging::GetDpiForWindow;
+    use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, LOGPIXELSX, ReleaseDC};
     use windows::Win32::Foundation::{POINT, RECT};
 
     let hwnd = find_eframe_window();
@@ -3988,8 +3987,12 @@ fn update_mouse_passthrough(cat_rects: &[egui::Rect], is_dragging: bool) {
     }
 
     // GetCursorPos/GetWindowRect 返回物理像素，egui rect 是逻辑像素，需要按 DPI 缩放
-    let dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
-    let scale = if dpi > 0.0 { dpi / 96.0 } else { 1.0 };
+    let scale = unsafe {
+        let hdc = GetDC(windows::Win32::Foundation::HWND(std::ptr::null_mut()));
+        let dpi = GetDeviceCaps(hdc, LOGPIXELSX) as f32;
+        let _ = ReleaseDC(windows::Win32::Foundation::HWND(std::ptr::null_mut()), hdc);
+        if dpi > 0.0 { dpi / 96.0 } else { 1.0 }
+    };
 
     let local_x = (cursor_pos.x - win_rect.left) as f32 / scale;
     let local_y = (cursor_pos.y - win_rect.top) as f32 / scale;
