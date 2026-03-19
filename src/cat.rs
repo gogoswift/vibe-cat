@@ -3955,38 +3955,26 @@ fn update_mouse_passthrough(cat_rects: &[egui::Rect], is_dragging: bool) {
 }
 
 #[cfg(target_os = "windows")]
-fn update_mouse_passthrough(cat_rects: &[egui::Rect], is_dragging: bool) {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, GetWindowLongW, GetWindowRect, SetWindowLongW, GWL_EXSTYLE,
-        WS_EX_TRANSPARENT,
+fn update_mouse_passthrough(cat_rects: &[egui::Rect], _is_dragging: bool) {
+    use windows::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, DeleteObject, GetDC, GetDeviceCaps, ReleaseDC,
+        SetWindowRgn, LOGPIXELSX, RGN_OR,
     };
-    use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, LOGPIXELSX, ReleaseDC};
-    use windows::Win32::Foundation::{POINT, RECT};
 
     let hwnd = find_eframe_window();
     let Some(hwnd) = hwnd else { return };
 
-    if is_dragging {
+    if cat_rects.is_empty() {
+        // 无猫时设置空区域，让所有鼠标事件穿透
         unsafe {
-            let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, style & !(WS_EX_TRANSPARENT.0 as i32));
+            let empty_rgn = CreateRectRgn(0, 0, 0, 0);
+            let _ = SetWindowRgn(hwnd, Some(empty_rgn), true);
+            // SetWindowRgn 接管 region，无需 DeleteObject
         }
         return;
     }
 
-    let mut cursor_pos = POINT::default();
-    let cursor_ok = unsafe { GetCursorPos(&mut cursor_pos) };
-    if cursor_ok.is_err() {
-        return;
-    }
-
-    let mut win_rect = RECT::default();
-    let rect_ok = unsafe { GetWindowRect(hwnd, &mut win_rect) };
-    if rect_ok.is_err() {
-        return;
-    }
-
-    // GetCursorPos/GetWindowRect 返回物理像素，egui rect 是逻辑像素，需要按 DPI 缩放
+    // DPI 缩放：egui rect 是逻辑像素，SetWindowRgn 需要物理像素
     let scale = unsafe {
         let hdc = GetDC(windows::Win32::Foundation::HWND(std::ptr::null_mut()));
         let dpi = GetDeviceCaps(hdc, LOGPIXELSX) as f32;
@@ -3994,19 +3982,21 @@ fn update_mouse_passthrough(cat_rects: &[egui::Rect], is_dragging: bool) {
         if dpi > 0.0 { dpi / 96.0 } else { 1.0 }
     };
 
-    let local_x = (cursor_pos.x - win_rect.left) as f32 / scale;
-    let local_y = (cursor_pos.y - win_rect.top) as f32 / scale;
-    let mouse_pos = egui::pos2(local_x, local_y);
-
-    let over_any_cat = cat_rects.iter().any(|r| r.contains(mouse_pos));
-
     unsafe {
-        let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        if over_any_cat {
-            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, style & !(WS_EX_TRANSPARENT.0 as i32));
-        } else {
-            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TRANSPARENT.0 as i32);
+        // 合并所有猫矩形为一个 region
+        let combined = CreateRectRgn(0, 0, 0, 0);
+        for r in cat_rects {
+            let left = (r.left() * scale) as i32;
+            let top = (r.top() * scale) as i32;
+            let right = (r.right() * scale) as i32;
+            let bottom = (r.bottom() * scale) as i32;
+            let cat_rgn = CreateRectRgn(left, top, right, bottom);
+            CombineRgn(combined, combined, cat_rgn, RGN_OR);
+            let _ = DeleteObject(cat_rgn);
         }
+        // 只有猫精灵区域接收鼠标事件，其余穿透
+        let _ = SetWindowRgn(hwnd, Some(combined), true);
+        // SetWindowRgn 接管 combined，无需 DeleteObject
     }
 }
 

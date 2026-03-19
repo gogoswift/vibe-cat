@@ -386,11 +386,16 @@ pub fn run_gui(filter: Option<&str>) {
         i18n::translate(i18n::current_language(), TranslationKey::GuiWindowTitle),
         options,
         Box::new(move |cc| {
-            // 加载中文字体
+            // 加载中文字体（按平台选择系统字体）
             let mut fonts = egui::FontDefinitions::default();
-            if let Ok(font_data) =
-                std::fs::read("/System/Library/Fonts/Supplemental/Arial Unicode.ttf")
-            {
+            let font_path = if cfg!(target_os = "macos") {
+                "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+            } else if cfg!(target_os = "windows") {
+                "C:\\Windows\\Fonts\\msyh.ttc"
+            } else {
+                "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"
+            };
+            if let Ok(font_data) = std::fs::read(font_path) {
                 fonts.font_data.insert(
                     "pingfang".to_owned(),
                     egui::FontData::from_owned(font_data).into(),
