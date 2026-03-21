@@ -625,7 +625,7 @@ fn applied_layout_base_y(
         .dock_frame
         .as_ref()
         .map(|dock_frame| {
-            visible_base_y.min(bottom_dock_base_y_from_frame(
+            visible_base_y.max(bottom_dock_base_y_from_frame(
                 screens,
                 anchor_screen,
                 dock_frame,
