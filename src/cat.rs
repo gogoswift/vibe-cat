@@ -3346,6 +3346,7 @@ fn get_dock_bounds_ax(screens: &[MacScreenSnapshot]) -> Option<DockHorizontalBou
     const AX_VALUE_CGSIZE: u32 = 2;
 
     extern "C" {
+        fn AXIsProcessTrusted() -> bool;
         fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
         fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
         fn AXUIElementCopyAttributeValue(
@@ -3391,8 +3392,8 @@ fn get_dock_bounds_ax(screens: &[MacScreenSnapshot]) -> Option<DockHorizontalBou
         let ax_err = AXUIElementCopyAttributeValue(dock_el, children_attr, &mut children);
         if ax_err != SUCCESS {
             CFRelease(dock_el);
-            // 只在权限相关错误时弹窗：-25211 (APIDisabled) 或 -25205 (CannotComplete)
-            if (ax_err == -25211 || ax_err == -25205) && !AX_PROMPTED.swap(true, Ordering::Relaxed)
+            // 先检查是否已授权，只有确认未授权时才弹窗（避免已授权但 AX 暂时失败时误弹）
+            if !AXIsProcessTrusted() && !AX_PROMPTED.swap(true, Ordering::Relaxed)
             {
                 use objc2_foundation::{NSDictionary, NSNumber, NSString as NSStr};
                 let key = NSStr::from_str("AXTrustedCheckOptionPrompt");
